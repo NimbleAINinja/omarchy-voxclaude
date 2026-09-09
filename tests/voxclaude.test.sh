@@ -42,6 +42,7 @@ make_stub omarchy-launch-or-focus-tui ''
 make_stub xdg-open ''
 make_stub hyprctl '
 case "$1 $2" in
+  "binds -j") echo "${HYPR_BINDS:-[]}" ;;
   "clients -j") [[ ${HYPR_NO_WINDOWS:-} == 1 ]] && echo "[]" || echo "[{\"address\":\"0xabc\",\"pid\":${HYPR_WINDOW_PID:-0},\"class\":\"org.omarchy.agent\",\"title\":\"work\"}]" ;;
   "activewindow -j") echo "{\"address\":\"${HYPR_ACTIVE:-0xother}\"}" ;;
 esac'
@@ -490,6 +491,44 @@ check "list --json prints the session records" bash -c "'$script' list --json | 
 check "attach latest opens the newest session" called $'omarchy-launch-or-focus-tui\t.*claude attach abcd1234'
 : > "$LOG"; "$script" attach abcd1234
 check "attach by id opens that session" called 'claude attach abcd1234'
+
+# ---- keybind ----------------------------------------------------------------
+# The widget's hint must name the key the user actually bound, not the one the
+# README suggests. Hyprland answers directly when the bind carries the command;
+# Omarchy's Lua config compiles binds to an opaque "__lua" dispatcher, so the
+# config file is the fallback.
+hypr_conf="$HOME/.config/hypr"
+mkdir -p "$hypr_conf"
+keybind() { HYPR_BINDS="${1:-[]}" "$script" keybind; }
+
+exec_binds='[{"modmask":64,"key":"D","release":false,"dispatcher":"exec","arg":"'"$script"' start"},
+             {"modmask":64,"key":"D","release":true,"dispatcher":"exec","arg":"'"$script"' stop"}]'
+check "keybind reads the live bind from hyprland" test "$(keybind "$exec_binds")" = "Super+D"
+
+mods_binds='[{"modmask":65,"key":"space","release":false,"dispatcher":"exec","arg":"'"$script"' start"}]'
+check "keybind spells out every modifier" test "$(keybind "$mods_binds")" = "Super+Shift+Space"
+
+release_only='[{"modmask":64,"key":"D","release":true,"dispatcher":"exec","arg":"'"$script"' stop"}]'
+check "keybind ignores a bind that is not the press" test -z "$(keybind "$release_only")"
+
+lua_binds='[{"modmask":72,"key":"K","release":false,"dispatcher":"__lua","arg":"80"}]'
+cat > "$hypr_conf/bindings.lua" <<'LUA'
+local voxclaude = os.getenv("HOME") .. "/.config/omarchy/plugins/io.github.nimbleaininja.voxclaude/bin/voxclaude"
+o.bind("SUPER + ALT + K", "Talk to Claude (hold)", voxclaude .. " start")
+o.bind("SUPER + ALT + K", "Talk to Claude (release)", voxclaude .. " stop", { release = true })
+LUA
+check "keybind reads the lua config when hyprland hides the command" \
+  test "$(keybind "$lua_binds")" = "Super+Alt+K"
+rm -f "$hypr_conf/bindings.lua"
+
+cat > "$hypr_conf/bindings.conf" <<'CONF'
+bind = SUPER SHIFT, F9, exec, ~/.config/omarchy/plugins/io.github.nimbleaininja.voxclaude/bin/voxclaude start
+bindr = SUPER SHIFT, F9, exec, ~/.config/omarchy/plugins/io.github.nimbleaininja.voxclaude/bin/voxclaude stop
+CONF
+check "keybind reads a hyprland.conf-style bind too" test "$(keybind)" = "Super+Shift+F9"
+rm -f "$hypr_conf/bindings.conf"
+
+check "keybind says nothing when no key is bound" test -z "$(keybind)"
 
 # ---- status -----------------------------------------------------------------
 check "status prints idle when nothing is recorded" bash -c "rm -rf '$RT'; [[ \$('$script' status) == idle ]]"

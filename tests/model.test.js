@@ -49,7 +49,7 @@ test("glyphFor maps every status to a glyph and an emphasis", () => {
 })
 
 test("statusLabel is a short human phrase per status", () => {
-  assert.equal(Model.statusLabel("idle"), "Hold Super+D and talk")
+  assert.equal(Model.statusLabel("idle", "Super+D"), "Hold Super+D and talk")
   assert.equal(Model.statusLabel("listening"), "Listening…")
   assert.equal(Model.statusLabel("transcribing"), "Transcribing…")
   assert.equal(Model.statusLabel("thinking"), "Claude is working")
@@ -57,6 +57,22 @@ test("statusLabel is a short human phrase per status", () => {
   assert.equal(Model.statusLabel("terminal"), "Running in a terminal")
   assert.equal(Model.statusLabel("error"), "Something went wrong")
   assert.equal(Model.statusLabel("done"), "Done")
+})
+
+test("statusLabel names whatever key is actually bound", () => {
+  assert.equal(Model.statusLabel("idle", "Ctrl+Alt+Space"), "Hold Ctrl+Alt+Space and talk")
+  assert.equal(Model.statusLabel("bogus", "Super+K"), "Hold Super+K and talk")
+})
+
+test("statusLabel asks for a bind when nothing is bound", () => {
+  assert.equal(Model.statusLabel("idle", ""), "Bind a key to talk to Claude")
+  assert.equal(Model.statusLabel("idle"), "Bind a key to talk to Claude")
+})
+
+test("emptyHint names the bound key, or asks for one", () => {
+  assert.equal(Model.emptyHint("Super+D"), "Nothing yet. Hold Super+D and say what you need.")
+  assert.equal(Model.emptyHint("Alt+F9"), "Nothing yet. Hold Alt+F9 and say what you need.")
+  assert.match(Model.emptyHint(""), /[Bb]ind a key/)
 })
 
 test("excerpt trims, collapses whitespace and adds an ellipsis when cut", () => {

@@ -25,6 +25,10 @@ Panel {
   readonly property string tool: Qt.resolvedUrl("bin/voxclaude").toString().replace(/^file:\/\//, "")
 
   property string status: "idle"
+  // The key the user actually bound, resolved by bin/voxclaude from Hyprland
+  // (or the hypr config). Empty until it answers, and empty for good if no
+  // bind exists, which the hint text says out loud.
+  property string keybind: ""
   property var sessions: []
   property double nowMs: Date.now()
   property int tick: 0
@@ -34,7 +38,7 @@ Panel {
   // just to read its head is work for nothing.
   readonly property var latest: list.count > 0 ? list.rows[0] : null
   readonly property string tooltip: {
-    var text = Model.statusLabel(status)
+    var text = Model.statusLabel(status, keybind)
     if (latest && status !== "idle") {
       text += "\n" + Model.excerpt(latest.prompt, 80)
       if (latest.step) text += "\n" + Model.excerpt(latest.step, 80)
@@ -48,6 +52,7 @@ Panel {
   function refresh() {
     statusFile.reload()
     feedFile.reload()
+    keybindProc.running = true
   }
 
   function attach(shortId) {
@@ -72,6 +77,18 @@ Panel {
   }
 
   onOpenedChanged: if (opened) { nowMs = Date.now(); refresh() }
+
+  // Asked once at startup and again on every refresh, so rebinding the key
+  // and reloading Hyprland is enough to correct the hint.
+  Process {
+    id: keybindProc
+    command: [root.tool, "keybind"]
+    running: true
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.keybind = text.trim()
+    }
+  }
 
   // status is one word, rewritten atomically by bin/voxclaude.
   FileView {
@@ -132,6 +149,7 @@ Panel {
     function refresh(): string { root.refresh(); return "ok" }
     function attach(): string { root.attach("latest"); return "ok" }
     function status(): string { return root.status }
+    function keybind(): string { return root.keybind }
   }
 
   BarIconButton {
@@ -215,7 +233,7 @@ Panel {
         PanelHero {
           width: parent.width
           title: "VoxClaude"
-          meta: Model.statusLabel(root.status)
+          meta: Model.statusLabel(root.status, root.keybind)
           foreground: root.foreground
           fontFamily: root.fontFamily
           iconComponent: Component {
@@ -245,6 +263,7 @@ Panel {
           width: parent.width
           sessions: root.sessions
           active: root.opened
+          keybind: root.keybind
           nowMs: root.nowMs
           foreground: root.foreground
           dim: root.dim

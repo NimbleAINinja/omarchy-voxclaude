@@ -217,4 +217,15 @@ TestCase {
     compare(list.count, 0)
     verify(list.emptyVisible)
   }
+
+  // The hint names the key that is actually bound, not the one the README
+  // happens to suggest.
+  function test_empty_state_names_the_bound_key() {
+    var list = makeList({ sessions: [], keybind: "Ctrl+Alt+Space" })
+    verify(list.emptyText.indexOf("Ctrl+Alt+Space") >= 0)
+    list.keybind = "Super+K"
+    verify(list.emptyText.indexOf("Super+K") >= 0)
+    list.keybind = ""
+    verify(/[Bb]ind a key/.test(list.emptyText))
+  }
 }

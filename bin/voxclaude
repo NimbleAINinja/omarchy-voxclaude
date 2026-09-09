@@ -18,6 +18,7 @@
 #   voxclaude attach <id|latest> open a terminal attached to a session
 #   voxclaude list --json        session records as a JSON array
 #   voxclaude status             current bar status word
+#   voxclaude keybind            the key bound to start recording, e.g. Super+D
 #
 # State lives in $XDG_RUNTIME_DIR/voxclaude: status (one word), recording
 # (marker while the key is held), prompt.txt (voxtype's transcript),
@@ -738,6 +739,89 @@ cmd_attach() {
   open_attached "$short"
 }
 
+# ------------------------------------------------------------- keybind
+# The widget's hint should name the key the user actually bound, not the one
+# the README suggests. Hyprland answers straight away when the bind carries
+# its command (`bind = SUPER, D, exec, …/voxclaude start`), but Omarchy's Lua
+# config compiles binds down to a "__lua" dispatcher holding an opaque index,
+# so the config file is read back instead. Nothing found means nothing bound:
+# say so rather than invent a key that does nothing.
+
+# One bind token (a modifier or the key itself) in the spelling people use.
+bind_token() { # <token>
+  local t=$1
+  case ${t,,} in
+    super|mod|win|logo|meta) printf 'Super' ;;
+    ctrl|control) printf 'Ctrl' ;;
+    alt|mod1) printf 'Alt' ;;
+    shift) printf 'Shift' ;;
+    *) if (( ${#t} == 1 )); then printf '%s' "${t^^}"; else printf '%s' "${t^}"; fi ;;
+  esac
+}
+
+# Modifiers first, always in the same order, then the key: "Super+Shift+F9".
+format_bind() { # <token>...
+  local t name key="" mods=("" "" "" "") out=()
+  for t in "$@"; do
+    [[ -n $t ]] || continue
+    name=$(bind_token "$t")
+    case $name in
+      Super) mods[0]=Super ;;
+      Ctrl) mods[1]=Ctrl ;;
+      Alt) mods[2]=Alt ;;
+      Shift) mods[3]=Shift ;;
+      *) key=$name ;;
+    esac
+  done
+  [[ -n $key ]] || return 1
+  for t in "${mods[@]}" "$key"; do [[ -n $t ]] && out+=("$t"); done
+  local IFS=+
+  printf '%s\n' "${out[*]}"
+}
+
+# Hyprland's modmask, in the order format_bind wants them.
+mask_tokens() { # <modmask>
+  local m=${1:-0}
+  (( m & 64 )) && printf 'SUPER '
+  (( m & 4 )) && printf 'CTRL '
+  (( m & 8 )) && printf 'ALT '
+  (( m & 1 )) && printf 'SHIFT '
+  return 0
+}
+
+# The press bind for this script as written in a hypr config file, either
+# `o.bind("SUPER + D", …, voxclaude .. " start")` or
+# `bind = SUPER, D, exec, …/voxclaude start`.
+config_bind() { # <file>
+  local line
+  line=$(grep -m1 -E 'voxclaude.* start($|[^a-z])' "$1" 2>/dev/null) || return 1
+  case $1 in
+    *.lua) sed -n 's/^[^"]*"\([^"]*\)".*/\1/p' <<< "$line" ;;
+    *) sed -n 's/^[[:space:]]*bind[a-z]*[[:space:]]*=[[:space:]]*//p' <<< "$line" | cut -d, -f1,2 ;;
+  esac
+}
+
+cmd_keybind() {
+  local pair mask key file spec
+  pair=$(hyprctl binds -j 2>/dev/null | jq -r '
+      [ .[]? | select(.release != true)
+             | select((.arg // "") | test("voxclaude.* start($|[^a-z])")) ]
+      | first // empty | "\(.modmask)\t\(.key)"' 2>/dev/null)
+  if [[ -n $pair ]]; then
+    mask=${pair%%$'\t'*}; key=${pair#*$'\t'}
+    # shellcheck disable=SC2046 # the tokens are meant to split
+    format_bind $(mask_tokens "$mask") "$key" && return 0
+  fi
+  for file in "$HOME/.config/hypr"/*.lua "$HOME/.config/hypr"/*.conf "$HOME/.config/hypr"/bindings/*.conf; do
+    [[ -f $file ]] || continue
+    spec=$(config_bind "$file") || continue
+    [[ -n $spec ]] || continue
+    # shellcheck disable=SC2046
+    format_bind $(tr '+,' '  ' <<< "$spec") && return 0
+  done
+  return 0
+}
+
 cmd_status() {
   local word; word=$(cat "$STATUS_FILE" 2>/dev/null); word=${word//[[:space:]]/}
   printf '%s\n' "${word:-idle}"
@@ -763,6 +847,7 @@ case ${1:-} in
   pin) cmd_pin "${2:-}" ;;
   hooks) cmd_hooks "${2:-status}" ;;
   list) list_json ;;
+  keybind) cmd_keybind ;;
   status) cmd_status ;;
-  *) sed -n '2,18p' "$self" | sed 's/^# \{0,1\}//'; exit 1 ;;
+  *) sed -n -e '2p' -e '/^#   voxclaude/p' "$self" | sed 's/^# \{0,1\}//'; exit 1 ;;
 esac

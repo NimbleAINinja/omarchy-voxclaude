@@ -29,7 +29,9 @@ Column {
   // Repeater over a plain array rebuilds every delegate when it changes.
   // Panel.qml turns this off while the popover is closed.
   property bool active: true
-  property string emptyText: "Nothing yet. Hold Super+D and say what you need."
+  // Panel.qml passes the key bin/voxclaude resolved; empty means none is bound.
+  property string keybind: ""
+  property string emptyText: Model.emptyHint(keybind)
 
   signal attachRequested(string shortId)
   signal openRequested(string value)

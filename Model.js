@@ -56,7 +56,11 @@ function glyphFor(status) {
   }
 }
 
-function statusLabel(status) {
+// The hold key is whatever the user bound; bin/voxclaude keybind resolves it
+// from Hyprland (or the hypr config) and the widget passes it in here. An
+// empty keybind means no bind was found, so ask for one instead of naming a
+// key that would do nothing.
+function statusLabel(status, keybind) {
   switch (status) {
   case "listening": return "Listening…"
   case "transcribing": return "Transcribing…"
@@ -68,8 +72,13 @@ function statusLabel(status) {
   case "error": return "Something went wrong"
   case "done": return "Done"
   case "stopped": return "Stopped"
-  default: return "Hold Super+D and talk"
+  default: return keybind ? "Hold " + keybind + " and talk" : "Bind a key to talk to Claude"
   }
+}
+
+function emptyHint(keybind) {
+  return keybind ? "Nothing yet. Hold " + keybind + " and say what you need."
+                 : "Nothing yet. Bind a key to VoxClaude \u2014 see the README."
 }
 
 // Colour family for a status: ok (green), busy (yellow), alert (red), muted.
@@ -290,7 +299,7 @@ function resultLabel(result) {
 if (typeof module !== "undefined" && module.exports) {
   module.exports = {
     STATUSES: STATUSES, toList: toList, terminalPattern: terminalPattern, wantsTerminal: wantsTerminal,
-    parseBgOutput: parseBgOutput, glyphFor: glyphFor, statusLabel: statusLabel, statusTone: statusTone, kindGlyph: kindGlyph, plainText: plainText, escapeHtml: escapeHtml, excerpt: excerpt,
+    parseBgOutput: parseBgOutput, glyphFor: glyphFor, statusLabel: statusLabel, emptyHint: emptyHint, statusTone: statusTone, kindGlyph: kindGlyph, plainText: plainText, escapeHtml: escapeHtml, excerpt: excerpt,
     sortSessions: sortSessions, relativeTime: relativeTime, overallStatus: overallStatus,
     SPRITE_FRAMES: SPRITE_FRAMES, spritePixels: spritePixels, litCount: litCount,
     spriteFrame: spriteFrame, spriteInterval: spriteInterval,

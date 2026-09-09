@@ -82,6 +82,14 @@ o.window("org\\.omarchy\\.voxclaude.*", { size = { 1260, 850 } })  -- pixels; pe
 its own key keeps typing into the focused window; VoxClaude never changes the
 voxtype config.
 
+Bind a different key and the widget follows: its hint names the key you
+actually bound, not the one above. `voxclaude keybind` is what resolves it —
+from `hyprctl binds` when the bind carries its command, and from the files in
+`~/.config/hypr` when Omarchy's Lua config compiles the command away behind a
+`__lua` dispatcher. Bind nothing at all and the widget asks you to, rather
+than naming a key that does nothing. The lookup runs when the shell starts and
+again whenever the popover opens, so `hyprctl reload` is enough to correct it.
+
 ## Tracking every Claude session, not only voice ones
 
 The widget turns out to be a good session tracker, so it can watch sessions
@@ -195,6 +203,7 @@ omarchy-shell io.github.nimbleaininja.voxclaude toggle
 omarchy-shell io.github.nimbleaininja.voxclaude status
 bin/voxclaude dispatch "reply with pong"   # exercise the pipeline without a microphone
 bin/voxclaude list | jq                    # the session records
+bin/voxclaude keybind                      # the hold key the widget will name
 ```
 
 Note: the pixel renderer is `PixelSprite.qml`, not `Sprite.qml`; QtQuick has a
