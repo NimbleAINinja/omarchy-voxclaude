@@ -79,10 +79,8 @@ TestCase {
     compare(list.rowAt(0).chipCount, 0)
     compare(list.rowAt(1).subtitleText, "Done · 50m ago")
     compare(list.rowAt(1).replyText, "Built it. Open http://localhost:5173/ to see it.")
-    var md = makeList({ sessions: [
-      { shortId: "m", status: "done", startedAt: 1, prompt: "p", reply: "**Done.** See `index.html` in [the repo](https://x.y)." }
-    ] })
-    compare(md.rowAt(0).replyText, "Done. See index.html in the repo.")
+    // Turning that reply into prose is bin/voxclaude's job, checked there and
+    // in Model.plainText's own tests; see test_reply_is_shown_as_stored.
     compare(list.rowAt(1).chipCount, 2)
     compare(list.rowAt(1).chipAt(0).label, "localhost:5173")
   }
@@ -191,6 +189,27 @@ TestCase {
     compare(row.replyFormat, Text.PlainText)
     compare(row.chipAt(0).labelFormat, Text.PlainText)
     compare(row.promptText, "<b>drop</b> the <table> tag")
+  }
+
+  function test_rows_are_not_built_while_the_list_is_inactive() {
+    // The popover's content tree stays mounted while it is closed, and the
+    // feed is rewritten on every hook of every tracked session. Rebuilding
+    // every row delegate when nobody can see them is pure cost.
+    var list = makeList({ sessions: sessions(), active: false })
+    compare(list.count, 3)
+    verify(!list.rowAt(0))
+    list.active = true
+    verify(list.rowAt(0))
+    compare(list.rowAt(0).shortId, "bbbb2222")
+  }
+
+  function test_reply_is_shown_as_stored() {
+    // bin/voxclaude already turned the reply into prose; stripping it a
+    // second time here would eat characters the reply meant to keep.
+    var list = makeList({ sessions: [
+      { shortId: "r", status: "done", startedAt: 1, prompt: "p", reply: "Use `npm test` **first**" }
+    ] })
+    compare(list.rowAt(0).replyText, "Use `npm test` **first**")
   }
 
   function test_empty_state() {

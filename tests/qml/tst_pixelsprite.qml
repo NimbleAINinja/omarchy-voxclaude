@@ -30,7 +30,9 @@ TestCase {
     var sprite = createTemporaryObject(spriteComponent, suite, { frame: Model.SPRITE_FRAMES.idle, width: 14, height: 12, dpr: 2 })
     compare(sprite.columns, 9)
     compare(sprite.cell, 1.5)
-    compare(sprite.cellCount, Model.spritePixels(Model.SPRITE_FRAMES.idle).length)
+    // Counted, not collected: cellCount is re-evaluated on every animation
+    // tick, so it must not allocate a list of pixel objects to do it.
+    compare(sprite.cellCount, Model.litCount(Model.SPRITE_FRAMES.idle))
     var hidpi = createTemporaryObject(spriteComponent, suite, { frame: Model.SPRITE_FRAMES.idle, width: 14, height: 12, dpr: 3 })
     fuzzyCompare(hidpi.cell, 4 / 3, 0.001)
     var coarse = createTemporaryObject(spriteComponent, suite, { frame: Model.SPRITE_FRAMES.idle, width: 14, height: 12, dpr: 1 })

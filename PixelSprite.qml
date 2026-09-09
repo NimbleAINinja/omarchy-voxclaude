@@ -26,7 +26,7 @@ Item {
   readonly property real gridHeight: rows * cell
   readonly property real originX: Math.round((width - gridWidth) / 2 * dpr) / dpr
   readonly property real originY: Math.round((height - gridHeight) / 2 * dpr) / dpr
-  readonly property int cellCount: Model.spritePixels(frame).length
+  readonly property int cellCount: Model.litCount(frame)
   readonly property int delegateCount: rows * columns
 
   function lit(row, column) {

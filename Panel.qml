@@ -30,7 +30,9 @@ Panel {
   property int tick: 0
 
   readonly property var look: Model.glyphFor(status)
-  readonly property var latest: sessions.length > 0 ? Model.sortSessions(sessions)[0] : null
+  // SessionList has already sorted them; sorting the same array again here
+  // just to read its head is work for nothing.
+  readonly property var latest: list.count > 0 ? list.rows[0] : null
   readonly property string tooltip: {
     var text = Model.statusLabel(status)
     if (latest && status !== "idle") {
@@ -242,6 +244,7 @@ Panel {
           id: list
           width: parent.width
           sessions: root.sessions
+          active: root.opened
           nowMs: root.nowMs
           foreground: root.foreground
           dim: root.dim

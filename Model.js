@@ -212,6 +212,18 @@ function spritePixels(frame) {
   return out
 }
 
+// Just the count. spritePixels builds an object per lit cell, which is a lot
+// of garbage for a property re-read on every animation tick.
+function litCount(frame) {
+  var rows = toList(frame) || []
+  var total = 0
+  for (var y = 0; y < rows.length; y++) {
+    var row = String(rows[y])
+    for (var x = 0; x < row.length; x++) if (row.charAt(x) === "X") total++
+  }
+  return total
+}
+
 function spriteFrame(status, tick) {
   switch (status) {
   case "thinking":
@@ -280,7 +292,8 @@ if (typeof module !== "undefined" && module.exports) {
     STATUSES: STATUSES, toList: toList, terminalPattern: terminalPattern, wantsTerminal: wantsTerminal,
     parseBgOutput: parseBgOutput, glyphFor: glyphFor, statusLabel: statusLabel, statusTone: statusTone, kindGlyph: kindGlyph, plainText: plainText, escapeHtml: escapeHtml, excerpt: excerpt,
     sortSessions: sortSessions, relativeTime: relativeTime, overallStatus: overallStatus,
-    SPRITE_FRAMES: SPRITE_FRAMES, spritePixels: spritePixels, spriteFrame: spriteFrame, spriteInterval: spriteInterval,
+    SPRITE_FRAMES: SPRITE_FRAMES, spritePixels: spritePixels, litCount: litCount,
+    spriteFrame: spriteFrame, spriteInterval: spriteInterval,
     elapsed: elapsed, isRunning: isRunning, rowSubtitle: rowSubtitle, resultLabel: resultLabel
   }
 }

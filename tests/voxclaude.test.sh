@@ -46,6 +46,21 @@ case "$1 $2" in
   "activewindow -j") echo "{\"address\":\"${HYPR_ACTIVE:-0xother}\"}" ;;
 esac'
 
+# A counting jq for the cost checks; it lives on its own PATH entry so the
+# rest of the suite runs against the real one.
+mkdir -p "$tmp/countbin"
+real_jq=$(command -v jq)
+cat > "$tmp/countbin/jq" <<SH
+#!/usr/bin/env bash
+echo jq >> "\$JQ_COUNT"
+exec $real_jq "\$@"
+SH
+chmod +x "$tmp/countbin/jq"
+count_hook() { # <countfile> <payload>
+  : > "$1"
+  printf '%s' "$2" | JQ_COUNT="$1" PATH="$tmp/countbin:$PATH" "$script" hook tool || true
+}
+
 fails=0
 check() { # check <name> <condition...>
   local name=$1; shift
@@ -365,6 +380,57 @@ cp "$tmp/settings.good" "$HOME/.claude/settings.json"
 
 reset; VOXTYPE_TEXT="do a thing" "$script" stop
 printf '%s' '{"session_id":"abcd1234-0000-4000-8000-000000000000","hook_event_name":"Stop","last_assistant_message":"all done"}' | "$script" hook stop
+
+# ---- a hook costs the same whatever the backlog ---------------------------------
+# PreToolUse blocks the tool call, in every session on the machine, so its cost
+# must not grow with the number of records lying around.
+reset; VOXTYPE_TEXT="do a thing" "$script" stop
+count_hook "$tmp/jq-one" '{"session_id":"abcd1234-0000-4000-8000-000000000000","hook_event_name":"PreToolUse","tool_name":"Read","tool_input":{"file_path":"/x/a.md"}}'
+for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
+  jq --arg s "extra0$i" '.shortId = $s | .startedAt = (.startedAt - 1000)' \
+    "$RT/sessions/abcd1234.json" > "$RT/sessions/extra0$i.json"
+done
+count_hook "$tmp/jq-many" '{"session_id":"abcd1234-0000-4000-8000-000000000000","hook_event_name":"PreToolUse","tool_name":"Read","tool_input":{"file_path":"/x/b.md"}}'
+check "a hook costs the same with 13 records as with one" \
+  test "$(wc -l < "$tmp/jq-one")" = "$(wc -l < "$tmp/jq-many")"
+check "every record still reaches the feed" bash -c "jq -e 'length == 13' '$RT/sessions.json' >/dev/null"
+rm -f "$RT"/sessions/extra0*.json
+"$script" hook tool <<< '{"session_id":"abcd1234-0000-4000-8000-000000000000","hook_event_name":"PreToolUse","tool_name":"Read","tool_input":{"file_path":"/x/c.md"}}'
+rm -f "$RT/sessions.json"
+"$script" hook tool <<< '{"session_id":"abcd1234-0000-4000-8000-000000000000","hook_event_name":"PreToolUse","tool_name":"Read","tool_input":{"file_path":"/x/d.md"}}'
+check "a missing feed still sets the bar status" test "$(status)" = thinking
+
+# ---- the claude pid is remembered, not looked up every turn ----------------------
+reset; CLAUDE_STUB_PID=$$ VOXTYPE_TEXT="do a thing" "$script" stop
+check "dispatch remembers the claude pid" bash -c "jq -e '.pid == $$' '$RT/sessions/abcd1234.json' >/dev/null"
+: > "$LOG"
+printf '%s' '{"session_id":"abcd1234-0000-4000-8000-000000000000","hook_event_name":"Stop","last_assistant_message":"done"}' | "$script" hook stop
+check "stop with a known pid never asks claude for the session list" not_called $'claude\t.*\tagents'
+check "stop with a known pid still finishes the session" bash -c "jq -e '.status == \"done\"' '$RT/sessions/abcd1234.json' >/dev/null"
+
+# ---- sessions we never track cost nothing ----------------------------------------
+: > "$LOG"
+printf '%s' "{\"session_id\":\"aaaa1111-0000-4000-8000-000000000000\",\"hook_event_name\":\"SessionStart\",\"source\":\"startup\",\"cwd\":\"$PWD\"}" \
+  | "$tmp/bin/claude" -p wrap "$script" hook start || true
+check "a one-shot session never asks claude for the session list" not_called 'agents'
+check "a one-shot session is remembered as untracked" test -f "$RT/sessions/.ignore-aaaa1111"
+: > "$LOG"
+printf '%s' '{"session_id":"aaaa1111-0000-4000-8000-000000000000","hook_event_name":"PreToolUse","tool_name":"Read","tool_input":{"file_path":"/x/y.md"}}' \
+  | "$tmp/bin/claude" -p wrap "$script" hook tool || true
+check "later hooks on an untracked session do no work" not_called 'agents'
+check "an untracked session still gets no record" test ! -f "$RT/sessions/aaaa1111.json"
+
+# ---- records are pruned without waiting for the next hold -------------------------
+reset; VOXTYPE_TEXT="do a thing" "$script" stop
+jq '.shortId = "old00001"' "$RT/sessions/abcd1234.json" > "$RT/sessions/old00001.json"
+jq '.shortId = "old00002" | .pinned = true' "$RT/sessions/abcd1234.json" > "$RT/sessions/old00002.json"
+touch -d '2 days ago' "$RT/sessions/old00001.json" "$RT/sessions/old00002.json"
+rm -f "$RT/.pruned"
+"$script" hook tool <<< '{"session_id":"abcd1234-0000-4000-8000-000000000000","hook_event_name":"PreToolUse","tool_name":"Read","tool_input":{"file_path":"/x/e.md"}}'
+check "hooks drop day-old records without waiting for the key" test ! -f "$RT/sessions/old00001.json"
+check "hooks keep pinned records" test -f "$RT/sessions/old00002.json"
+check "hooks keep current records" test -f "$RT/sessions/abcd1234.json"
+rm -f "$RT/sessions/old00001.json" "$RT/sessions/old00002.json"
 
 # ---- list / attach --------------------------------------------------------
 check "list --json prints the session records" bash -c "'$script' list --json | jq -e 'length == 1 and .[0].shortId == \"abcd1234\"' >/dev/null"

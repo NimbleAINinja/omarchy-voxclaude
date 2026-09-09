@@ -248,3 +248,13 @@ test("kindGlyph tells terminal rows from voice rows", () => {
   assert.notEqual(Model.kindGlyph("terminal"), Model.kindGlyph("voice"))
   assert.equal(Model.kindGlyph(undefined), Model.kindGlyph("voice"))
 })
+
+test("litCount counts lit cells without building a list of them", () => {
+  assert.equal(Model.litCount([".X.", "XX."]), 3)
+  assert.equal(Model.litCount([]), 0)
+  assert.equal(Model.litCount(null), 0)
+  for (const name of Object.keys(Model.SPRITE_FRAMES)) {
+    assert.equal(Model.litCount(Model.SPRITE_FRAMES[name]),
+                 Model.spritePixels(Model.SPRITE_FRAMES[name]).length, name)
+  }
+})

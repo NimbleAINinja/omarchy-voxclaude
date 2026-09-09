@@ -139,6 +139,14 @@ watches), `sessions/<shortId>.json` (one record per background session),
 watched by the widget), `hooks.json` (the session-scoped Claude hooks) and
 voxtype's `prompt.txt`.
 
+A `PreToolUse` hook blocks the tool call that fired it, in every session on
+the machine, so the script keeps that path cheap: one `jq` over the whole
+record set rather than one per record, the bar status read back from the
+feed it just wrote, the session's Claude pid remembered on the record
+instead of asked for (`claude agents --json` costs a process launch), and a
+marker beside the records for sessions already ruled out, so a `claude -p`
+one-shot decides that once instead of on every tool call.
+
 Findings from the CLI this was built against (Claude Code 2.1.266):
 
 - `claude --bg` ignores `--session-id`; the short id it prints is the first 8
@@ -156,8 +164,10 @@ Findings from the CLI this was built against (Claude Code 2.1.266):
 - Nothing heard (voxtype exit 3) → quiet toast, back to idle.
 - voxtype daemon down or Claude not logged in → error glyph plus a toast with
   the first line of stderr. `voxclaude status` prints the current word.
-- Records older than a day are pruned; the bar status is recomputed from the
-  records on every hook, so a lost notification cannot wedge the glyph.
+- Records older than a day are pruned, both when you hold the key and, at most
+  once an hour, from the hooks themselves, so a machine that only tracks
+  terminal sessions does not pile them up. The bar status is recomputed from
+  the records on every hook, so a lost notification cannot wedge the glyph.
 - Clicking a row seems to do nothing: the attach window opened as a tile
   behind your floating or maximized terminal. Add the window rules from the
   Install section.

@@ -74,16 +74,20 @@ set_status() { atomic_write "$STATUS_FILE" "$1"; }
 # must never blank the bar.
 recompute_status() {
   local current word
-  [[ -f $MARKER ]] && return 0
-  current=$(cat "$STATUS_FILE" 2>/dev/null); current=${current//[[:space:]]/}
-  case $current in listening|transcribing|error) return 0 ;; esac
-  word=$(list_json | jq -r '
+  local filter='
     if any(.[]; .status == "needs-input") then "needs-input"
     elif any(.[]; .status == "thinking") then "thinking"
     elif any(.[]; .status == "waiting") then "waiting"
-    else "idle" end') || return 0
-  [[ -n $word ]] && set_status "$word"
-  return 0
+    else "idle" end'
+  [[ -f $MARKER ]] && return 0
+  current=$(cat "$STATUS_FILE" 2>/dev/null); current=${current//[[:space:]]/}
+  case $current in listening|transcribing|error) return 0 ;; esac
+  # The feed was just rewritten from the same records, so read that instead of
+  # listing every record a second time; only fall back when it is not there.
+  [[ -f $FEED_FILE ]] && word=$(jq -r "$filter" "$FEED_FILE" 2>/dev/null)
+  [[ -n ${word:-} ]] || word=$(list_json | jq -r "$filter" 2>/dev/null) || return 0
+  [[ -n $word && $word != "$current" ]] || return 0
+  set_status "$word"
 }
 
 # The Claude process behind a session, via the session listing. Background
@@ -94,13 +98,25 @@ agent_entry() { # <shortId>
 }
 session_pid() { agent_entry "$1" | jq -r '.pid // empty'; }
 
+# The Claude process behind a session. Asking the CLI costs a process launch
+# and can take seconds, so the record remembers the pid and /proc says whether
+# it is still live; the listing is only for records that predate it.
+session_claude_pid() { # <shortId>
+  local pid
+  pid=$(jq -r '.pid // empty' "$(session_file "$1")" 2>/dev/null)
+  if [[ -n $pid && $pid != 0 && -d /proc/$pid ]]; then printf '%s' "$pid"; return 0; fi
+  pid=$(session_pid "$1")
+  [[ -n $pid && $pid != 0 ]] || return 1
+  update_session "$1" --argjson pid "$pid" '.pid = $pid' >/dev/null 2>&1
+  printf '%s' "$pid"
+}
+
 # Claude's Stop fires when its turn ends, even while a command it started in
 # the background is still running (a build poll, a dev server) and will wake
 # it later. Those commands are shells sourcing a Claude "shell-snapshots"
 # file, spawned directly under the Claude process.
 has_background_tasks() { # <shortId>
-  local pid; pid=$(session_pid "$1")
-  [[ -n $pid && $pid != 0 ]] || return 1
+  local pid; pid=$(session_claude_pid "$1") || return 1
   pgrep -P "$pid" -f 'shell-snapshots' >/dev/null 2>&1
 }
 
@@ -121,8 +137,9 @@ plain_text() {
 
 # Collapse whitespace and cut to N characters with an ellipsis. Mirrors Model.excerpt.
 excerpt() { # <text> <max>
-  local clean
-  clean=$(printf '%s' "$1" | tr -s '[:space:]' ' ' | sed 's/^ //; s/ $//')
+  local clean=${1//[[:space:]]/ }
+  while [[ $clean == *"  "* ]]; do clean=${clean//  / }; done
+  clean=${clean# }; clean=${clean% }
   if (( ${#clean} > $2 )); then printf '%s…' "${clean:0:$(($2 - 1))}"; else printf '%s' "$clean"; fi
 }
 
@@ -209,20 +226,23 @@ write_feed() {
   ) 9>"$RT/.feed.lock"
 }
 
-now_ms() { date +%s%3N; }
+# Bash 5 keeps the clock in a variable; `date` cost a process on every hook.
+now_ms() { local us=${EPOCHREALTIME/[.,]/}; printf '%s' "${us:0:13}"; }
 
 # Records that do not parse are skipped rather than failing the whole listing:
 # one damaged file must not freeze the widget's feed or blank the bar.
 list_json() {
-  local files=() f
-  while IFS= read -r f; do
-    jq -e . "$f" >/dev/null 2>&1 && files+=("$f")
-  done < <(find "$SESSIONS" -maxdepth 1 -name '*.json' -print 2>/dev/null | sort)
-  if (( ${#files[@]} > 0 )); then
-    jq -s 'sort_by(-.startedAt)' "${files[@]}"
-  else
-    echo '[]'
+  local files=() good=() f out
+  mapfile -t files < <(find "$SESSIONS" -maxdepth 1 -name '*.json' -print 2>/dev/null | sort)
+  (( ${#files[@]} )) || { echo '[]'; return; }
+  # One jq for the whole set; a record per jq made every hook cost more as the
+  # backlog grew. Validating one at a time is the fallback, not the rule.
+  if out=$(jq -s 'sort_by(-.startedAt)' "${files[@]}" 2>/dev/null); then
+    printf '%s\n' "$out"
+    return
   fi
+  for f in "${files[@]}"; do jq -e . "$f" >/dev/null 2>&1 && good+=("$f"); done
+  if (( ${#good[@]} )); then jq -s 'sort_by(-.startedAt)' "${good[@]}"; else echo '[]'; fi
 }
 
 latest_session() { list_json | jq -r '.[0].shortId // empty'; }
@@ -234,9 +254,25 @@ prune() {
     jq -e '.pinned == true' "$file" >/dev/null 2>&1 && continue
     rm -f "$file"; dropped=1
   done < <(find "$SESSIONS" -name '*.json' -mmin +1440 2>/dev/null)
+  while read -r file; do rm -f "$file"; done \
+    < <(find "$SESSIONS" -maxdepth 1 -name '.ignore-*' -mmin +1440 2>/dev/null)
   (( dropped )) && write_feed
   local vox_state="${XDG_RUNTIME_DIR:-/tmp}/voxtype/state"
   if [[ -f $MARKER && -f $vox_state ]] && [[ $(<"$vox_state") == idle ]]; then rm -f "$MARKER"; fi
+}
+
+# Pruning used to happen only when the key was held, so a machine that tracks
+# terminal sessions but never speaks kept every record forever - and the hooks
+# then paid for that backlog. Hooks prune too, at most once an hour. The stamp
+# holds a timestamp rather than relying on its own mtime, so reading it costs
+# no process at all.
+maybe_prune() {
+  local stamp=$RT/.pruned last=0
+  [[ -f $stamp ]] && read -r last < "$stamp" 2>/dev/null
+  [[ $last =~ ^[0-9]+$ ]] || last=0
+  (( EPOCHSECONDS - last < 3600 )) && return 0
+  printf '%s\n' "$EPOCHSECONDS" > "$stamp"
+  prune
 }
 
 # ---- windows (terminal-started sessions live in one)
@@ -278,24 +314,38 @@ claude_ancestor() {
 # claude process. `claude -p` one-shots are ignored. Returns 1 if nothing
 # was created.
 bootstrap_record() { # <sessionId> <cwd>
-  local sid=$1 cwd=$2 short=${1:0:8} entry kind window ancestor
+  local sid=$1 cwd=$2 short=${1:0:8} entry kind window ancestor apid="" aargs pid=0
+  # The hook's own claude process, walked out of the process tree: cheap, and
+  # it settles the one case we never track. Asking the CLI for the session
+  # listing costs a process launch, so a one-shot must be turned away first.
+  ancestor=$(claude_ancestor) || ancestor=""
+  if [[ -n $ancestor ]]; then
+    apid=${ancestor%%$'\t'*}; aargs=${ancestor#*$'\t'}
+    # A `claude -p` one-shot is never a row. Remember that, or every one of its
+    # tool calls pays for the same answer.
+    if [[ $aargs =~ [[:space:]](-p|--print)([[:space:]]|$) ]]; then
+      : > "$SESSIONS/.ignore-$short"
+      return 1
+    fi
+  fi
   entry=$(agent_entry "$short")
   if [[ -n $entry ]]; then
     kind=$(jq -r 'if .kind == "background" then "voice" else "terminal" end' <<< "$entry")
     [[ -n $cwd ]] || cwd=$(jq -r '.cwd // ""' <<< "$entry")
+    pid=$(jq -r '.pid // 0' <<< "$entry")
   else
-    # The hook's own claude process: it must be the session, so its working
-    # directory matches the hook's, and it is not a one-shot.
-    ancestor=$(claude_ancestor) || return 1
-    local apid=${ancestor%%$'\t'*} aargs=${ancestor#*$'\t'}
-    [[ $aargs =~ [[:space:]](-p|--print)([[:space:]]|$) ]] && return 1
+    # Not listed yet: it must still be the session the hook runs under, so its
+    # working directory has to match.
+    [[ -n $ancestor ]] || return 1
     [[ -n $cwd && $(readlink -f "/proc/$apid/cwd" 2>/dev/null) == "$(readlink -f "$cwd" 2>/dev/null)" ]] || return 1
     kind=terminal
+    pid=$apid
   fi
   window=$(find_window || echo null)
-  jq -n --arg short "$short" --arg uuid "$sid" --arg cwd "$cwd" --arg kind "$kind" --argjson window "$window" --argjson now "$(now_ms)" \
+  jq -n --arg short "$short" --arg uuid "$sid" --arg cwd "$cwd" --arg kind "$kind" --argjson window "$window" \
+    --argjson pid "${pid:-0}" --argjson now "$(now_ms)" \
     '{ shortId: $short, sessionId: $uuid, prompt: "", cwd: $cwd, startedAt: $now, updatedAt: $now, finishedAt: 0,
-       status: "ready", step: "", reply: "", results: [], pinned: false, kind: $kind, window: $window }' \
+       status: "ready", step: "", reply: "", results: [], pinned: false, kind: $kind, window: $window, pid: $pid }' \
     > "$(session_file "$short").tmp" && mv -f "$(session_file "$short").tmp" "$(session_file "$short")"
   write_feed
 }
@@ -308,6 +358,9 @@ read_hook() {
   sid=$(jq -r '.session_id // empty' <<< "$payload" 2>/dev/null) || return 1
   [[ -n $sid ]] || return 1
   short=${sid:0:8}
+  # Sessions we have already decided not to track cost nothing from here on.
+  [[ -f $SESSIONS/.ignore-$short ]] && return 1
+  maybe_prune
   # An unreadable record counts as missing, so a damaged one is rebuilt
   # instead of silently swallowing every later update.
   jq -e . "$(session_file "$short")" >/dev/null 2>&1 && return 0
@@ -382,7 +435,7 @@ cmd_dispatch() {
     write_hooks
     settings_args=(--settings "$HOOKS_FILE")
   fi
-  local out short uuid
+  local out short uuid pid
   out=$(cd "$cwd" && claude --bg --name "voice: $(excerpt "$text" 40)" "${settings_args[@]}" \
         --permission-mode "$mode" --append-system-prompt "$VOICE_PROMPT" -- "$text" 2>&1 </dev/null)
   short=$(grep -oiE 'backgrounded[^0-9a-f]*[0-9a-f]{6,}' <<< "$out" | grep -oE '[0-9a-f]{6,}$' | head -1)
@@ -391,10 +444,17 @@ cmd_dispatch() {
     notify -u critical -t 6000 "Claude did not start" "$(head -1 <<< "$out")"
     return 1
   fi
-  uuid=$(claude agents --json 2>/dev/null | jq -r --arg id "$short" '.[] | select(.id == $id) | .sessionId // empty' | head -1)
-  jq -n --arg short "$short" --arg uuid "$uuid" --arg prompt "$text" --arg cwd "$cwd" --argjson now "$(now_ms)" \
+  # One listing call for both: the uuid to resume with, and the pid that says
+  # later whether the session still has work running.
+  local entry
+  entry=$(agent_entry "$short")
+  uuid=$(jq -r '.sessionId // empty' <<< "$entry" 2>/dev/null)
+  pid=$(jq -r '.pid // 0' <<< "$entry" 2>/dev/null)
+  jq -n --arg short "$short" --arg uuid "$uuid" --arg prompt "$text" --arg cwd "$cwd" \
+    --argjson pid "${pid:-0}" --argjson now "$(now_ms)" \
     '{ shortId: $short, sessionId: $uuid, prompt: $prompt, cwd: $cwd, startedAt: $now, updatedAt: $now,
-       finishedAt: 0, status: "thinking", step: "", reply: "", results: [], pinned: false, kind: "voice", window: null }' \
+       finishedAt: 0, status: "thinking", step: "", reply: "", results: [], pinned: false, kind: "voice",
+       window: null, pid: $pid }' \
     > "$(session_file "$short").tmp" && mv -f "$(session_file "$short").tmp" "$(session_file "$short")"
   write_feed
   set_status thinking

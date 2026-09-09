@@ -25,6 +25,10 @@ Column {
   property real captionSize: 11
   property real rowHeight: 40
   property real radius: 6
+  // The feed is rewritten on every hook of every tracked session, and a
+  // Repeater over a plain array rebuilds every delegate when it changes.
+  // Panel.qml turns this off while the popover is closed.
+  property bool active: true
   property string emptyText: "Nothing yet. Hold Super+D and say what you need."
 
   signal attachRequested(string shortId)
@@ -64,7 +68,7 @@ Column {
 
   Repeater {
     id: repeater
-    model: root.rows
+    model: root.active ? root.rows : []
 
     Item {
       id: row
@@ -77,7 +81,9 @@ Column {
       readonly property string statusText: Model.statusLabel(status)
       readonly property string timeText: Model.relativeTime(modelData.startedAt, root.nowMs)
       readonly property string subtitleText: Model.rowSubtitle(modelData, root.nowMs)
-      readonly property string replyText: status === "done" ? Model.excerpt(Model.plainText(modelData.reply), 160) : ""
+      // bin/voxclaude stores the reply as prose already; stripping markdown a
+      // second time here would only eat characters it meant to keep.
+      readonly property string replyText: status === "done" ? Model.excerpt(modelData.reply, 160) : ""
       readonly property var results: Model.toList(modelData.results) || []
       readonly property int chipCount: results.length
       readonly property bool needsInput: status === "needs-input"
