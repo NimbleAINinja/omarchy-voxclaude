@@ -11,7 +11,13 @@ TestCase {
 
   Component {
     id: blinkComponent
-    Plugin.FinishBlink { interval: 15 }
+    // Sped up so the suite does not sit through three real seconds.
+    Plugin.FinishBlink { litMs: 60; gapMs: 200 }
+  }
+
+  Component {
+    id: defaultComponent
+    Plugin.FinishBlink {}
   }
 
   SignalSpy { id: spy }
@@ -20,6 +26,16 @@ TestCase {
     var b = createTemporaryObject(blinkComponent, suite)
     verify(b !== null)
     return b
+  }
+
+  // Three blinks spread over three seconds: a short shut-eye, then a long look
+  // back at you, three times over.
+  function test_the_burst_is_three_blinks_across_three_seconds() {
+    var b = createTemporaryObject(defaultComponent, suite)
+    verify(b !== null)
+    compare(b.blinks, 3)
+    compare(b.duration, 3000)
+    verify(b.gapMs > b.litMs)
   }
 
   function test_idle_until_triggered() {
@@ -40,6 +56,18 @@ TestCase {
     verify(!b.lit)
     // lit on, off, on, off, on, off
     compare(spy.count, 6)
+  }
+
+  // The gaps are really waited out: a burst takes about as long as it says,
+  // not the three quick flashes you would get if every phase were a blink.
+  function test_the_burst_lasts_about_as_long_as_it_says() {
+    var b = makeBlink()
+    var t0 = Date.now()
+    b.trigger()
+    tryVerify(function() { return !b.running }, 4000)
+    var took = Date.now() - t0
+    verify(took >= b.duration * 0.7)
+    verify(took <= b.duration * 2)
   }
 
   function test_a_second_finish_restarts_the_burst() {
