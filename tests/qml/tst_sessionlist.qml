@@ -183,6 +183,36 @@ TestCase {
     compare(attaches, [])
   }
 
+  function test_pin_hit_box_is_bigger_than_its_glyph() {
+    var list = makeList({ sessions: [{ shortId: "bbbb2222", status: "done", startedAt: 2, prompt: "second" }] })
+    var pin = list.rowAt(0).pinButton
+    verify(pin.width >= 28, "width " + pin.width)
+    verify(pin.height >= 24, "height " + pin.height)
+    // Clicking at the corner of the box, well away from the glyph, still pins.
+    var pins = []
+    list.pinRequested.connect(function(id) { pins.push(id) })
+    list.cursor = 0
+    mouseClick(pin, 2, 2)
+    compare(pins, ["bbbb2222"])
+  }
+
+  function test_hovering_the_pin_keeps_the_row_highlighted() {
+    var list = makeList({ sessions: [{ shortId: "bbbb2222", status: "done", startedAt: 2, prompt: "second" }] })
+    var row = list.rowAt(0), pin = row.pinButton
+    verify(!row.hot)
+    mouseMove(row, 10, row.height / 2)
+    verify(row.hot, "row is hot under the pointer")
+    verify(!row.pinHovered)
+    var p = pin.mapToItem(row, pin.width / 2, pin.height / 2)
+    mouseMove(row, p.x, p.y)
+    verify(row.hot, "row stays hot while the pointer is on the pin")
+    verify(row.pinHovered, "the pin knows it is hovered")
+    verify(pin.shown)
+    mouseMove(row, 10, row.height / 2)
+    verify(row.hot)
+    verify(!row.pinHovered)
+  }
+
   function test_status_colour_follows_tone() {
     var list = makeList({ okColor: "#00ff00", busyColor: "#ffff00", urgent: "#ff0000", dim: "#808080", sessions: [
       { shortId: "d", status: "done", startedAt: 4, prompt: "a" },

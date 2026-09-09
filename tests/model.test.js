@@ -166,6 +166,85 @@ test("spriteFrame animates only while busy", () => {
   assert.equal(Model.spriteFrame("listening", 3), Model.SPRITE_FRAMES.blink)
 })
 
+test("laptop frames are 17x11 grids in the gif's four colours", () => {
+  const names = Object.keys(Model.LAPTOP_FRAMES)
+  assert.equal(names.length, 19)
+  for (const name of names) {
+    const frame = Model.LAPTOP_FRAMES[name]
+    assert.equal(frame.length, 11, name + " rows")
+    for (const row of frame) {
+      assert.equal(row.length, 17, name + " cols")
+      assert.match(row, /^[.XSEL]+$/)
+    }
+    // Every frame has eyes.
+    assert.ok(frame.some(row => row.includes("E")), name + " eyes")
+  }
+  // The laptop is out of sight while idle and on screen while typing.
+  assert.ok(!Model.LAPTOP_FRAMES.idle.some(row => row.includes("L")))
+  for (const frame of Model.LAPTOP_TYPING) assert.ok(frame.some(row => row.includes("L")))
+  // Typing frames all differ, so the loop reads as motion.
+  assert.notDeepEqual(Model.LAPTOP_FRAMES.typeA, Model.LAPTOP_FRAMES.typeB)
+  assert.notDeepEqual(Model.LAPTOP_FRAMES.typeB, Model.LAPTOP_FRAMES.typeC)
+  assert.notDeepEqual(Model.LAPTOP_FRAMES.typeA, Model.LAPTOP_FRAMES.typeC)
+  // Idle: wide-set eyes, no shading, laptop hidden.
+  assert.equal(Model.LAPTOP_FRAMES.idle[4], "..XEXXXXEX.......")
+})
+
+test("every non-dot cell is lit, so eyes, shading and laptop all paint", () => {
+  assert.deepEqual(Model.spritePixels(["XL", ".E"]), [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 }])
+  assert.equal(Model.litCount(["XSEL", "...."]), 4)
+  for (const ch of ["X", "S", "E", "L"]) assert.ok(Model.isLit(ch), ch)
+  for (const ch of [".", "", " "]) assert.ok(!Model.isLit(ch), JSON.stringify(ch))
+})
+
+test("the laptop critter pulls the laptop out once, then types", () => {
+  const intro = Model.LAPTOP_INTRO, typing = Model.LAPTOP_TYPING
+  assert.equal(intro.length, 8)
+  assert.equal(intro[0], Model.LAPTOP_FRAMES.reach)
+  assert.equal(intro[intro.length - 1], Model.LAPTOP_FRAMES.sit)
+  for (let tick = 0; tick < intro.length; tick++) {
+    assert.equal(Model.laptopFrame("thinking", tick), intro[tick], "intro tick " + tick)
+    assert.equal(Model.laptopFrame("transcribing", tick), intro[tick])
+  }
+  for (let tick = intro.length; tick < intro.length + 9; tick++) {
+    assert.equal(Model.laptopFrame("thinking", tick), typing[(tick - intro.length) % 3], "loop tick " + tick)
+  }
+  // Needs-input plays the intro, then bounces between the hop and typing.
+  assert.equal(Model.laptopFrame("needs-input", 0), intro[0])
+  assert.equal(Model.laptopFrame("needs-input", 8), Model.LAPTOP_FRAMES.hop)
+  assert.equal(Model.laptopFrame("needs-input", 9), Model.LAPTOP_FRAMES.typeA)
+  // Waiting keeps the laptop open and still; listening blinks; the rest sit idle.
+  assert.equal(Model.laptopFrame("waiting", 5), Model.LAPTOP_FRAMES.pause)
+  assert.ok(Model.LAPTOP_FRAMES.pause.some(row => row.includes("L")))
+  assert.equal(Model.laptopFrame("listening", 0), Model.LAPTOP_FRAMES.idle)
+  assert.equal(Model.laptopFrame("listening", 3), Model.LAPTOP_FRAMES.blinkA)
+  assert.equal(Model.laptopFrame("idle", 7), Model.LAPTOP_FRAMES.idle)
+  assert.equal(Model.laptopFrame("error", 7), Model.LAPTOP_FRAMES.idle)
+  assert.equal(Model.laptopFrame("done", 7), Model.LAPTOP_FRAMES.idle)
+  // Faster ticks than the invader, since one gesture is many frames.
+  assert.equal(Model.laptopInterval("thinking"), 150)
+  assert.equal(Model.laptopInterval("transcribing"), 150)
+  assert.equal(Model.laptopInterval("needs-input"), 200)
+  assert.equal(Model.laptopInterval("listening"), 400)
+  assert.equal(Model.laptopInterval("waiting"), 0)
+  assert.equal(Model.laptopInterval("idle"), 0)
+  // The bar's invader is untouched by all of this.
+  assert.equal(Model.spriteFrame("thinking", 0), Model.SPRITE_FRAMES.busyA)
+  assert.equal(Model.spriteInterval("thinking"), 500)
+})
+
+test("the laptop tick restarts on status changes unless the laptop stays open", () => {
+  assert.equal(Model.keepsTick("transcribing", "thinking"), true)
+  assert.equal(Model.keepsTick("thinking", "needs-input"), true)
+  assert.equal(Model.keepsTick("needs-input", "thinking"), true)
+  assert.equal(Model.keepsTick("thinking", "waiting"), true)
+  assert.equal(Model.keepsTick("idle", "thinking"), false)
+  assert.equal(Model.keepsTick("listening", "transcribing"), false)
+  assert.equal(Model.keepsTick("thinking", "idle"), false)
+  assert.equal(Model.keepsTick("thinking", "done"), false)
+  assert.equal(Model.keepsTick("idle", "listening"), false)
+})
+
 test("spriteInterval is faster when Claude needs you and off when idle", () => {
   assert.equal(Model.spriteInterval("thinking"), 500)
   assert.equal(Model.spriteInterval("transcribing"), 500)

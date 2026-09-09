@@ -102,6 +102,13 @@ Column {
       readonly property bool pinned: !!modelData.pinned
       readonly property bool hasCursor: index === root.cursor
       readonly property bool hot: hover.containsMouse || hasCursor
+      // The pin's hover is derived from the row's own pointer position
+      // instead of a second hover-enabled MouseArea on top. A nested one
+      // took the hover away from the row, which dropped the highlight and
+      // hid the pin, which handed the hover back, which showed it again:
+      // a flicker for as long as the pointer sat on the pin.
+      readonly property bool pinHovered: hover.containsMouse
+        && pinButton.contains(pinButton.mapFromItem(hover, hover.mouseX, hover.mouseY))
       readonly property int promptFormat: promptLabel.textFormat
       readonly property int replyFormat: replyLabel.textFormat
       property alias pinButton: pinButton
@@ -171,8 +178,9 @@ Column {
           HoverAction {
             id: pinButton
             anchors.right: parent.right
-            anchors.top: parent.top
+            anchors.verticalCenter: parent.verticalCenter
             shown: row.hot || row.pinned
+            hovered: row.pinHovered
             glyph: root.pinGlyph
             tint: row.pinned ? root.foreground : root.dim
             tip: row.pinned ? "Unpin" : "Pin to the top"
@@ -293,32 +301,36 @@ Column {
 
   // A small clickable glyph; swallows its click so the row underneath does
   // not open. `tip` is exposed for tooltips; the list itself draws none.
+  // The hit box is a good deal larger than the glyph, which is about 13px
+  // across; the owner says when it is hovered (see pinHovered).
   component HoverAction: Item {
     id: action
     property string glyph: ""
     property color tint: root.dim
     property string tip: ""
     property bool shown: true
+    property bool hovered: false
     signal triggered()
 
-    width: actionLabel.implicitWidth + 6
-    height: actionLabel.implicitHeight
+    width: Math.max(28, actionLabel.implicitWidth + 6)
+    height: Math.max(24, actionLabel.implicitHeight)
 
     Text {
       id: actionLabel
       anchors.centerIn: parent
       text: action.glyph
       opacity: action.shown ? 1 : 0
-      color: actionHover.containsMouse ? root.foreground : action.tint
+      color: action.hovered ? root.foreground : action.tint
       font.family: root.fontFamily
       font.pixelSize: root.fontSize
       Behavior on opacity { NumberAnimation { duration: 120 } }
     }
 
+    // Clicks only: with hover left to the row's MouseArea, the row stays
+    // highlighted while the pointer is on the pin.
     MouseArea {
-      id: actionHover
       anchors.fill: parent
-      hoverEnabled: true
+      hoverEnabled: false
       enabled: action.shown
       cursorShape: action.shown ? Qt.PointingHandCursor : Qt.ArrowCursor
       onClicked: action.triggered()

@@ -64,6 +64,33 @@ TestCase {
     compare(sprite.delegateAt(0), first)
   }
 
+  function test_palette_colours_cells_by_character() {
+    var sprite = createTemporaryObject(spriteComponent, suite, {
+      frame: ["XL", "SE"], width: 8, height: 8, color: "#ff0000",
+      palette: { L: "#00ff00", S: "#0000ff" }
+    })
+    compare(sprite.cellCount, 4)
+    for (var i = 0; i < 4; i++) verify(sprite.delegateAt(i).visible)
+    compare(sprite.delegateAt(0).color, "#ff0000")
+    compare(sprite.delegateAt(1).color, "#00ff00")
+    compare(sprite.delegateAt(2).color, "#0000ff")
+    // A character the palette does not name falls back to `color`.
+    compare(sprite.delegateAt(3).color, "#ff0000")
+    // Swapping to a frame where that cell is body again recolours it in place.
+    sprite.frame = ["XX", "SE"]
+    compare(sprite.delegateAt(1).color, "#ff0000")
+  }
+
+  function test_laptop_frames_get_three_pixel_cells_in_the_hero() {
+    var sprite = createTemporaryObject(spriteComponent, suite, {
+      frame: Model.LAPTOP_FRAMES.typeA, width: 51, height: 33, dpr: 2
+    })
+    compare(sprite.columns, 17)
+    compare(sprite.rows, 11)
+    compare(sprite.cell, 3)
+    compare(sprite.cellCount, Model.litCount(Model.LAPTOP_FRAMES.typeA))
+  }
+
   function test_lit_cells_are_the_visible_ones() {
     var sprite = createTemporaryObject(spriteComponent, suite, { frame: ["X.", ".X"], width: 8, height: 8 })
     compare(sprite.delegateCount, 4)

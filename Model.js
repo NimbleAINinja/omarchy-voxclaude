@@ -226,12 +226,272 @@ var SPRITE_FRAMES = {
   ]
 }
 
+// The laptop critter, traced cell for cell from claude-laptop.gif (a 19x19
+// pixel-art gif, cropped to the 17x11 cells the critter and laptop use) and
+// drawn in the popover hero in the gif's own colours: "X" body, "S" the
+// darker shading, "E" eyes, "L" laptop. Idle, blink, pull the laptop out
+// from behind, open it, hop, type, then close it and tuck it away.
+var LAPTOP_FRAMES = {
+  idle: [
+    ".................",
+    ".................",
+    ".................",
+    "..XXXXXXXX.......",
+    "..XEXXXXEX.......",
+    "XXXXXXXXXXXX.....",
+    "XXXXXXXXXXXX.....",
+    "..XXXXXXXX.......",
+    "..XXXXXXXX.......",
+    "..X.X..X.X.......",
+    "..X.X..X.X......."
+  ],
+  blinkA: [
+    ".................",
+    ".................",
+    ".................",
+    ".................",
+    "..XXXXXXXX.......",
+    "XXXXXXXXXX.......",
+    "XXXESXXXEX.......",
+    "..XXXXXXXXXX.....",
+    "..XXXXXXXXX......",
+    "..XXXXXXXX.......",
+    "..X.X..X.X......."
+  ],
+  blinkB: [
+    ".................",
+    ".................",
+    ".................",
+    ".................",
+    "..XXXXXXXX.......",
+    "XXXXXXXXXX.......",
+    "XXXESXXXEX.......",
+    "..XXXXXXXXXX.....",
+    "..XXXXXXXXXX.....",
+    "..XXXXXXXX.......",
+    "..X.X..X.X......."
+  ],
+  reach: [
+    ".................",
+    ".................",
+    "..........LLL....",
+    "..XXXXXXXX..LL...",
+    "..XEXXXXEXXX.....",
+    "..XXXXXXXXXX.....",
+    "XXXXXXXXXXXX.....",
+    "XXXXXXXXXX.......",
+    "..XXXXXXXX.......",
+    "..X.X..X.X.......",
+    "..X.X..X.X......."
+  ],
+  pull: [
+    ".............L...",
+    ".............L...",
+    "..........LLLL...",
+    "..XXXXXXXXXX.....",
+    "..XEXXXXEXXX.....",
+    "..XXXXXXXX.......",
+    "XXXXXXXXXX.......",
+    "XXXXXXXXXX.......",
+    "..XXXXXXXX.......",
+    "..X.X..X.X.......",
+    "..X.X..X.X......."
+  ],
+  swing: [
+    ".................",
+    ".................",
+    ".................",
+    "..XXXXXXXX.......",
+    "..XXXXXXXX.......",
+    "XXXEXXXXEX....LLL",
+    "XXXXXXXXXXXX..LL.",
+    "..XXXXXXXXXLLLL..",
+    "..XXXXXXXXXX.....",
+    "..X.X..X.X.......",
+    "..X.X..X.X......."
+  ],
+  lower: [
+    ".................",
+    ".................",
+    ".................",
+    "..XXXXXXXX.......",
+    "..XXXXXXXX.......",
+    "..XEXXXXEX.......",
+    "XXXXXXXXXX.......",
+    "XXXXXXXXXX.......",
+    "..XXXXXXXXXX....L",
+    "..X.X..X.XXX...L.",
+    "..X.X..X.X....L.."
+  ],
+  set: [
+    ".................",
+    ".................",
+    ".................",
+    "..XXXXXXXX.......",
+    "..XXXXXXXX.......",
+    "XXXEXXXXEXXX.....",
+    "XXXXXXXXXXXX.....",
+    "..XXXXXXXX.......",
+    "..XXXXXXXX.......",
+    "..X.X..X.X......L",
+    "..X.X..X.X....L.."
+  ],
+  hop: [
+    ".................",
+    "....XX...XX......",
+    "...XXX...XXX.....",
+    "..SXXXXXXXXX.....",
+    "..SXXXXXXXX......",
+    "..SXEXXXXEX......",
+    "..SXXXXXXXX......",
+    "..SXXXXXXXX......",
+    "..SXXXXXXXX.....L",
+    "..SX.X..X.X...LL.",
+    "..SX.X..X.X.LLL.."
+  ],
+  sit: [
+    ".................",
+    ".................",
+    ".................",
+    ".................",
+    "...SSXXXXXXS.....",
+    "...SSXEXXXESX....",
+    "...SSXEXXXESX....",
+    "...SSXXXXXXSS....",
+    "...SSXXXXXXXX...L",
+    "...S.X..X.XXX..L.",
+    "..SS.X..X.XXX.L.."
+  ],
+  typeA: [
+    ".................",
+    ".................",
+    ".................",
+    ".................",
+    "...SSXXXXXX......",
+    "...SSXXXXXX......",
+    "...SSXEXXXE......",
+    "...SSXXXXXXXX....",
+    "...SSXXXXXXXX...L",
+    "...SSXXXXXXSS.LL.",
+    "..SS.X..X.X.LLL.."
+  ],
+  typeB: [
+    ".................",
+    ".................",
+    ".................",
+    ".................",
+    "...SSXXXXXX......",
+    "...SSXXXXXX......",
+    "...SSXEXXXE......",
+    "...SSXXXXXXXX....",
+    "...SSXXXXXXXX...L",
+    "...SSXXXXXXSS..L.",
+    "..SS.X..X.XSS.L.."
+  ],
+  typeC: [
+    ".................",
+    ".................",
+    ".................",
+    ".................",
+    "...SSXXXXXX......",
+    "...SSXXXXXX......",
+    "...SSXEXXXE......",
+    "...SSXXXXXXSS....",
+    "...SSXXXXXXXX...L",
+    "...SSXXXXXXXX..L.",
+    "..SS.X..X.X...L.."
+  ],
+  pause: [
+    ".................",
+    ".................",
+    ".................",
+    ".................",
+    "...SSXXXXXX......",
+    "...SSXXXXXX......",
+    "...SSXEXXXE......",
+    "...SSXXXXXXSS....",
+    "...SSXXXXXXXX...L",
+    "...SSXXXXXXXX..L.",
+    "..SS.X..X.XXX.L.."
+  ],
+  close: [
+    ".................",
+    ".................",
+    ".................",
+    ".................",
+    "..SSSXXXXXS......",
+    "..SSSSEXXSSXX....",
+    "..SSSSEXXSSSX....",
+    "..SSSXXXXXSSS.LL.",
+    "..SSSXXXXXXXX.L..",
+    "...S.X..X.XXX....",
+    "..SS.X..X.XXX...."
+  ],
+  tuck: [
+    ".................",
+    ".................",
+    ".................",
+    "..SXXXXXXX.......",
+    "..SXXXXXXX.......",
+    "..SSEXXXXE.......",
+    ".XXSXXXXXXXXL....",
+    ".XXSXXXXXXXXXL...",
+    "..SXXXXXXXSLLL...",
+    "..S.X..X.X.......",
+    "..S.X..X.X......."
+  ],
+  settleBlink: [
+    ".................",
+    ".................",
+    ".................",
+    ".................",
+    "..XXXXXXXX.......",
+    "XXXXXXXXXX.......",
+    "XXXEXXXXEX.......",
+    "..XXXXXXXXXX.....",
+    "..XXXXXXXXXX.....",
+    "..XXXXXXXX.......",
+    "..X.X..X.X......."
+  ],
+  settleA: [
+    ".................",
+    ".................",
+    ".................",
+    ".................",
+    "..XXXXXXXX.......",
+    "XXXXXXXXXX.......",
+    "XXXEXXXXEX.......",
+    "..XXXXXXXXX......",
+    "..XXXXXXXXX......",
+    "..XXXXXXXX.......",
+    "..X.X..X.X......."
+  ],
+  settleB: [
+    ".................",
+    ".................",
+    ".................",
+    "..XXXXXXXX.......",
+    "..XEXXXXEX.......",
+    "..XXXXXXXX.......",
+    "XXXXXXXXXXXX.....",
+    "XXXXXXXXXXXX.....",
+    "..XXXXXXXX.......",
+    "..X.X..X.X.......",
+    "..X.X..X.X......."
+  ]
+}
+
+// Any cell that is not a dot is painted; the renderer picks the colour.
+function isLit(ch) {
+  return ch !== "" && ch !== "." && ch !== " "
+}
+
 function spritePixels(frame) {
   var rows = toList(frame) || []
   var out = []
   for (var y = 0; y < rows.length; y++) {
     var row = String(rows[y])
-    for (var x = 0; x < row.length; x++) if (row.charAt(x) === "X") out.push({ x: x, y: y })
+    for (var x = 0; x < row.length; x++) if (isLit(row.charAt(x))) out.push({ x: x, y: y })
   }
   return out
 }
@@ -243,11 +503,12 @@ function litCount(frame) {
   var total = 0
   for (var y = 0; y < rows.length; y++) {
     var row = String(rows[y])
-    for (var x = 0; x < row.length; x++) if (row.charAt(x) === "X") total++
+    for (var x = 0; x < row.length; x++) if (isLit(row.charAt(x))) total++
   }
   return total
 }
 
+// The bar's invader.
 function spriteFrame(status, tick) {
   switch (status) {
   case "thinking":
@@ -267,6 +528,56 @@ function spriteInterval(status) {
   case "thinking":
   case "transcribing": return 500
   case "needs-input": return 250
+  case "listening": return 400
+  default: return 0
+  }
+}
+
+// Statuses during which the laptop critter has its laptop out.
+function laptopOpen(status) {
+  return status === "thinking" || status === "transcribing" || status === "needs-input" || status === "waiting"
+}
+
+// The laptop animation restarts on a status change unless the laptop stays
+// open across it: transcribing → thinking must not pull the laptop out twice.
+function keepsTick(from, to) {
+  return laptopOpen(from) && laptopOpen(to)
+}
+
+// Pulling the laptop out and opening it plays once from tick 0, then the
+// typing loop runs for as long as the status lasts.
+var LAPTOP_INTRO = [
+  LAPTOP_FRAMES.reach, LAPTOP_FRAMES.pull, LAPTOP_FRAMES.pull, LAPTOP_FRAMES.swing,
+  LAPTOP_FRAMES.lower, LAPTOP_FRAMES.set, LAPTOP_FRAMES.hop, LAPTOP_FRAMES.sit
+]
+var LAPTOP_TYPING = [LAPTOP_FRAMES.typeA, LAPTOP_FRAMES.typeB, LAPTOP_FRAMES.typeC]
+
+// The popover's laptop critter.
+function laptopFrame(status, tick) {
+  switch (status) {
+  case "thinking":
+  case "transcribing":
+    return tick < LAPTOP_INTRO.length ? LAPTOP_INTRO[tick]
+                                      : LAPTOP_TYPING[(tick - LAPTOP_INTRO.length) % LAPTOP_TYPING.length]
+  case "needs-input":
+    return tick < LAPTOP_INTRO.length ? LAPTOP_INTRO[tick]
+                                      : (tick % 2 === 0 ? LAPTOP_FRAMES.hop : LAPTOP_FRAMES.typeA)
+  case "waiting":
+    return LAPTOP_FRAMES.pause
+  case "listening":
+    return tick % 4 === 3 ? LAPTOP_FRAMES.blinkA : LAPTOP_FRAMES.idle
+  default:
+    return LAPTOP_FRAMES.idle
+  }
+}
+
+// One gesture is many frames, so the laptop critter ticks faster than the
+// invader. The gif itself runs at about 86ms a frame.
+function laptopInterval(status) {
+  switch (status) {
+  case "thinking":
+  case "transcribing": return 150
+  case "needs-input": return 200
   case "listening": return 400
   default: return 0
   }
@@ -336,8 +647,10 @@ if (typeof module !== "undefined" && module.exports) {
     STATUSES: STATUSES, toList: toList, terminalPattern: terminalPattern, wantsTerminal: wantsTerminal,
     parseBgOutput: parseBgOutput, glyphFor: glyphFor, statusLabel: statusLabel, emptyHint: emptyHint, statusTone: statusTone, kindGlyph: kindGlyph, plainText: plainText, escapeHtml: escapeHtml, excerpt: excerpt,
     sortSessions: sortSessions, visibleSessions: visibleSessions, relativeTime: relativeTime, overallStatus: overallStatus, latestFinish: latestFinish,
-    SPRITE_FRAMES: SPRITE_FRAMES, spritePixels: spritePixels, litCount: litCount,
+    SPRITE_FRAMES: SPRITE_FRAMES, LAPTOP_FRAMES: LAPTOP_FRAMES, LAPTOP_INTRO: LAPTOP_INTRO, LAPTOP_TYPING: LAPTOP_TYPING,
+    isLit: isLit, spritePixels: spritePixels, litCount: litCount,
     spriteFrame: spriteFrame, spriteInterval: spriteInterval,
+    laptopOpen: laptopOpen, keepsTick: keepsTick, laptopFrame: laptopFrame, laptopInterval: laptopInterval,
     elapsed: elapsed, isRunning: isRunning, rowSubtitle: rowSubtitle, rowStep: rowStep, resultLabel: resultLabel
   }
 }

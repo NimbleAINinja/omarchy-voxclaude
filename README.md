@@ -20,6 +20,9 @@ Built for the [Omarchy](https://omarchy.org) shell on top of
   three seconds, so a finished task registers even if you missed the toast.
   Hover for the current prompt and step.
 - **Popover** (left-click) with the recent voice sessions, needs-input first.
+  Its hero is a second critter in Claude's own colours, traced from the
+  laptop gif: he blinks while listening, pulls a laptop out from behind his
+  back and types while Claude works, and hops when Claude needs you.
   Each row carries a status dot and word: green when done, yellow while Claude
   is working or waiting on a background command it started (a build poll, a
   dev server), red when it needs you or something failed, grey when stopped.

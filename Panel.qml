@@ -40,6 +40,12 @@ Panel {
   property double lastFinish: -1
   readonly property bool finishing: finishBlink.lit
   property int tick: 0
+  // The popover hero's laptop critter runs its own, faster clock, and only
+  // while someone can see it.
+  property int laptopTick: 0
+  // The gif's own colours: body, shading, eyes, laptop.
+  readonly property color laptopBody: "#d87050"
+  readonly property var laptopPalette: ({ S: "#b86848", E: "#000000", L: "#888888" })
 
   readonly property var look: Model.glyphFor(status)
   readonly property color spriteColor: finishing ? blinkColor
@@ -86,7 +92,18 @@ Panel {
     Quickshell.execDetached([root.tool, "pin", shortId])
   }
 
-  onOpenedChanged: if (opened) { nowMs = Date.now(); refresh() }
+  // Opening the popover starts the laptop critter from its first frame, so
+  // if Claude is working he pulls the laptop out as you look.
+  onOpenedChanged: if (opened) { nowMs = Date.now(); laptopTick = 0; refresh() }
+
+  // Restart the laptop animation on a status change so the intro plays from
+  // its first frame, except between statuses that both keep the laptop
+  // open, where restarting would pull it out again mid-work.
+  property string lastStatus: "idle"
+  onStatusChanged: {
+    if (!Model.keepsTick(lastStatus, status)) laptopTick = 0
+    lastStatus = status
+  }
 
   // Asked once at startup and again on every refresh, so rebinding the key
   // and reloading Hyprland is enough to correct the hint.
@@ -154,6 +171,13 @@ Panel {
     running: Model.spriteInterval(root.status) > 0
     repeat: true
     onTriggered: root.tick = (root.tick + 1) % 1000
+  }
+
+  Timer {
+    interval: Math.max(50, Model.laptopInterval(root.status))
+    running: root.opened && Model.laptopInterval(root.status) > 0
+    repeat: true
+    onTriggered: root.laptopTick = (root.laptopTick + 1) % 1000
   }
 
   IpcHandler {
@@ -255,15 +279,29 @@ Panel {
           meta: Model.statusLabel(root.status, root.keybind)
           foreground: root.foreground
           fontFamily: root.fontFamily
+          // The laptop critter, 17x11 cells at 3px (six device pixels on a
+          // 2x screen), in the gif's colours rather than the bar's. The hero
+          // centres its icon against the labels; the slot is one cell shorter
+          // than the sprite, which hangs off its bottom, so the feet line up
+          // with the bottom of the keybind hint instead of sitting below it.
+          // The top rows are empty except while the laptop comes out.
           iconComponent: Component {
-            PixelSprite {
-              width: Style.font.display * 1.15
-              height: Style.font.display
-              // The hero stays mounted while the popover is closed, so only
-              // follow the animation tick when someone can see it.
-              frame: root.opened ? Model.spriteFrame(root.status, root.tick)
-                                 : Model.spriteFrame(root.status, 0)
-              color: root.spriteColor
+            Item {
+              width: 51
+              height: 27
+              PixelSprite {
+                anchors.bottom: parent.bottom
+                // Nudged right so he does not hug the popover's edge; the
+                // labels keep their place, so the gap to the title shrinks.
+                x: 2
+                width: 51
+                height: 33
+                // The hero stays mounted while the popover is closed, so only
+                // follow the animation tick when someone can see it.
+                frame: Model.laptopFrame(root.status, root.opened ? root.laptopTick : 0)
+                color: root.laptopBody
+                palette: root.laptopPalette
+              }
             }
           }
         }
