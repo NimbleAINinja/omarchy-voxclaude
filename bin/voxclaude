@@ -32,7 +32,7 @@ ROBOT=$'\xf3\xb1\x9a\xa3' # nf-md-robot, same glyph as the Agents widget
 VOICE_PROMPT="You were launched by voice from a desktop widget (VoxClaude). The user cannot see this terminal unless they choose to open it, so work autonomously and keep replies short. End your final message with one line saying where the result is (a file path or URL) whenever there is one, and name any command they must run to see it."
 
 self=$(realpath "${BASH_SOURCE[0]}")
-plugin_dir=$(dirname "$(dirname "$self")")
+plugin_dir=${self%/*/*}
 RT=${XDG_RUNTIME_DIR:-/tmp}/voxclaude
 SESSIONS=$RT/sessions
 PROMPT_FILE=$RT/prompt.txt
@@ -41,20 +41,26 @@ STATUS_FILE=$RT/status
 HOOKS_FILE=$RT/hooks.json
 FEED_FILE=$RT/sessions.json
 SETTINGS=${CLAUDE_SETTINGS:-$HOME/.claude/settings.json}
-mkdir -p "$SESSIONS"
+[[ -d $SESSIONS ]] || mkdir -p "$SESSIONS"
 
 # ---------------------------------------------------------------- helpers
 
-# Widget settings: the inline entry in shell.json wins, manifest defaults fill in.
-setting() {
-  local value
-  value=$(jq -r --arg id "$PLUGIN_ID" --arg k "$1" \
-    '[.bar.layout[]?[]? | select(.id == $id) | .[$k] | select(. != null)] | first // empty' \
-    "$HOME/.config/omarchy/shell.json" 2>/dev/null)
-  if [[ -z $value ]]; then
-    value=$(jq -r --arg k "$1" '.barWidget.defaults[$k] // empty' "$plugin_dir/manifest.json")
-  fi
-  printf '%s' "$value"
+# Widget settings: the inline entry in shell.json wins, manifest defaults fill
+# in. One jq reads every key, on the path between the transcript and Claude.
+load_settings() {
+  [[ -n ${S_LOADED:-} ]] && return 0
+  local files=("$plugin_dir/manifest.json") line
+  [[ -f $HOME/.config/omarchy/shell.json ]] && files=("$HOME/.config/omarchy/shell.json" "${files[@]}")
+  line=$(jq -r -n --arg id "$PLUGIN_ID" '
+    [inputs] as $docs
+    | ($docs | map(select(type == "object" and has("bar"))) | first // {}) as $shell
+    | ($docs | map(select(type == "object" and has("barWidget"))) | first // {}) as $manifest
+    | ([$shell.bar.layout[]?[]? | select(type == "object" and .id == $id)] | first // {}) as $entry
+    | ($manifest.barWidget.defaults // {}) as $defaults
+    | ["cwd", "permissionMode", "terminalWords", "waitSeconds"]
+    | map(. as $k | ($entry[$k] // $defaults[$k] // "") | tostring) | join("\t")' "${files[@]}" 2>/dev/null)
+  IFS=$'\t' read -r S_CWD S_MODE S_WORDS S_WAIT <<< "$line"
+  S_LOADED=1
 }
 
 atomic_write() { # <path> <content>
@@ -72,22 +78,17 @@ set_status() { atomic_write "$STATUS_FILE" "$1"; }
 # without this guard an unrelated session would cancel "listening" mid-hold.
 # A word is only written when one was actually computed: a damaged record
 # must never blank the bar.
-recompute_status() {
-  local current word
-  local filter='
-    if any(.[]; .status == "needs-input") then "needs-input"
+STATUS_FILTER='if any(.[]; .status == "needs-input") then "needs-input"
     elif any(.[]; .status == "thinking") then "thinking"
     elif any(.[]; .status == "waiting") then "waiting"
     else "idle" end'
+apply_status() { # <word computed from the records>
+  local current=""
   [[ -f $MARKER ]] && return 0
-  current=$(cat "$STATUS_FILE" 2>/dev/null); current=${current//[[:space:]]/}
+  [[ -f $STATUS_FILE ]] && read -r current < "$STATUS_FILE" 2>/dev/null
   case $current in listening|transcribing|error) return 0 ;; esac
-  # The feed was just rewritten from the same records, so read that instead of
-  # listing every record a second time; only fall back when it is not there.
-  [[ -f $FEED_FILE ]] && word=$(jq -r "$filter" "$FEED_FILE" 2>/dev/null)
-  [[ -n ${word:-} ]] || word=$(list_json | jq -r "$filter" 2>/dev/null) || return 0
-  [[ -n $word && $word != "$current" ]] || return 0
-  set_status "$word"
+  [[ -n $1 && $1 != "$current" ]] || return 0
+  set_status "$1"
 }
 
 # The Claude process behind a session, via the session listing. Background
@@ -103,7 +104,7 @@ session_pid() { agent_entry "$1" | jq -r '.pid // empty'; }
 # it is still live; the listing is only for records that predate it.
 session_claude_pid() { # <shortId>
   local pid
-  pid=$(jq -r '.pid // empty' "$(session_file "$1")" 2>/dev/null)
+  pid=$(jq -r '.pid // empty' "$SESSIONS/$1.json" 2>/dev/null)
   if [[ -n $pid && $pid != 0 && -d /proc/$pid ]]; then printf '%s' "$pid"; return 0; fi
   pid=$(session_pid "$1")
   [[ -n $pid && $pid != 0 ]] || return 1
@@ -196,7 +197,7 @@ session_file() { printf '%s' "$SESSIONS/$1.json"; }
 # shared ".tmp" path splice their output and corrupt the record for good.
 update_session() { # <shortId> <jq filter> [jq args...]
   local short=$1 file lock rc; shift
-  file=$(session_file "$short")
+  file=$SESSIONS/$short.json
   lock=$SESSIONS/.$short.lock
   (
     flock 9 2>/dev/null || true
@@ -213,52 +214,82 @@ update_session() { # <shortId> <jq filter> [jq args...]
   return $rc
 }
 
-# One file the widget can watch instead of polling: every record, newest first.
+# One file the widget can watch instead of polling: every record, newest
+# first. The same jq that sorts the records also decides the bar word, so a
+# hook pays for one pass over the set, not two. A word is only written when
+# one was actually computed: a damaged set must never blank the bar.
 write_feed() {
+  local out feed word
+  out=$(list_json --with-status) || return 1
+  feed=${out%$'\n'*}; word=${out##*$'\n'}
+  [[ -n $feed && $feed != "$word" ]] || return 1
   (
     flock 9 2>/dev/null || true
     tmp=$(mktemp "$FEED_FILE.XXXXXX") || exit 1
-    if list_json > "$tmp" 2>/dev/null && [[ -s $tmp ]]; then
-      mv -f "$tmp" "$FEED_FILE"
-    else
-      rm -f "$tmp"
-    fi
+    if printf '%s\n' "$feed" > "$tmp"; then mv -f "$tmp" "$FEED_FILE"; else rm -f "$tmp"; fi
   ) 9>"$RT/.feed.lock"
+  apply_status "$word"
 }
 
-# Bash 5 keeps the clock in a variable; `date` cost a process on every hook.
-now_ms() { local us=${EPOCHREALTIME/[.,]/}; printf '%s' "${us:0:13}"; }
+# Bash 5 keeps the clock in a variable; `date` cost a process on every hook,
+# and a command substitution costs a fork, so the value lands in $NOW.
+set_now() { NOW=${EPOCHREALTIME/[.,]/}; NOW=${NOW:0:13}; }
 
 # Records that do not parse are skipped rather than failing the whole listing:
 # one damaged file must not freeze the widget's feed or blank the bar.
-list_json() {
-  local files=() good=() f out
-  mapfile -t files < <(find "$SESSIONS" -maxdepth 1 -name '*.json' -print 2>/dev/null | sort)
-  (( ${#files[@]} )) || { echo '[]'; return; }
+# --with-status prints the array on one line and the bar word on the next.
+list_json() { # [--with-status]
+  local files=() good=() f out filter='sort_by(-.startedAt)' flags=(-r) empty='[]'
+  if [[ ${1:-} == --with-status ]]; then
+    filter="sort_by(-.startedAt) | ., ($STATUS_FILTER)"; flags=(-r -c); empty=$'[]\nidle'
+  fi
+  shopt -s nullglob; files=("$SESSIONS"/*.json); shopt -u nullglob
+  (( ${#files[@]} )) || { printf '%s\n' "$empty"; return; }
   # One jq for the whole set; a record per jq made every hook cost more as the
   # backlog grew. Validating one at a time is the fallback, not the rule.
-  if out=$(jq -s 'sort_by(-.startedAt)' "${files[@]}" 2>/dev/null); then
+  if out=$(jq "${flags[@]}" -s "$filter" "${files[@]}" 2>/dev/null); then
     printf '%s\n' "$out"
     return
   fi
   for f in "${files[@]}"; do jq -e . "$f" >/dev/null 2>&1 && good+=("$f"); done
-  if (( ${#good[@]} )); then jq -s 'sort_by(-.startedAt)' "${good[@]}"; else echo '[]'; fi
+  if (( ${#good[@]} )); then jq "${flags[@]}" -s "$filter" "${good[@]}"; else printf '%s\n' "$empty"; fi
 }
 
 latest_session() { list_json | jq -r '.[0].shortId // empty'; }
 
-# Drop day-old unpinned records and a recording marker voxtype no longer honours.
+# A recording marker voxtype no longer honours (the release bind never fired
+# and the daemon went idle on its own) must not turn the next press into a stop.
+clear_stale_marker() {
+  local vox_state="${XDG_RUNTIME_DIR:-/tmp}/voxtype/state" state=""
+  [[ -f $MARKER && -f $vox_state ]] || return 0
+  read -r state < "$vox_state" 2>/dev/null
+  [[ $state == idle ]] && rm -f "$MARKER"
+}
+
+# Drop day-old unpinned records, their locks, and stale untracked markers.
+# One jq reads every stale record's pin; a jq per record was what delayed the
+# microphone when a backlog had built up.
 prune() {
-  local file dropped=0
+  local old=() drop=() file short f
+  mapfile -t old < <(find "$SESSIONS" -maxdepth 1 -name '*.json' -mmin +1440 2>/dev/null)
+  if (( ${#old[@]} )); then
+    if ! mapfile -t drop < <(jq -r 'select(.pinned != true) | input_filename' "${old[@]}" 2>/dev/null); then drop=(); fi
+    if (( ${#drop[@]} == 0 )); then
+      for f in "${old[@]}"; do jq -e '.pinned == true' "$f" >/dev/null 2>&1 || drop+=("$f"); done
+    fi
+    for file in "${drop[@]}"; do
+      short=${file##*/}; short=${short%.json}
+      rm -f "$file" "$SESSIONS/.$short.lock"
+    done
+    (( ${#drop[@]} )) && write_feed
+  fi
   while read -r file; do
-    jq -e '.pinned == true' "$file" >/dev/null 2>&1 && continue
-    rm -f "$file"; dropped=1
-  done < <(find "$SESSIONS" -name '*.json' -mmin +1440 2>/dev/null)
+    short=${file##*/}; short=${short#.}; short=${short%.lock}
+    [[ -f $SESSIONS/$short.json ]] || rm -f "$file"
+  done < <(find "$SESSIONS" -maxdepth 1 -name '.*.lock' -mmin +1440 2>/dev/null)
   while read -r file; do rm -f "$file"; done \
     < <(find "$SESSIONS" -maxdepth 1 -name '.ignore-*' -mmin +1440 2>/dev/null)
-  (( dropped )) && write_feed
-  local vox_state="${XDG_RUNTIME_DIR:-/tmp}/voxtype/state"
-  if [[ -f $MARKER && -f $vox_state ]] && [[ $(<"$vox_state") == idle ]]; then rm -f "$MARKER"; fi
+  clear_stale_marker
 }
 
 # Pruning used to happen only when the key was held, so a machine that tracks
@@ -298,10 +329,12 @@ find_window() {
 # The claude process this hook runs under, found by walking up from our
 # parent. Prints "<pid>\t<command line>", or nothing.
 claude_ancestor() {
+  if [[ -n ${ANCESTOR_SEEN:-} ]]; then [[ -n $ANCESTOR ]] && printf '%s' "$ANCESTOR"; [[ -n $ANCESTOR ]]; return; fi
+  ANCESTOR_SEEN=1; ANCESTOR=""
   local pid=$PPID args depth=0
   while [[ -n $pid && $pid -gt 1 && $depth -lt 8 ]]; do
     args=$(ps -o args= -p "$pid" 2>/dev/null)
-    if [[ $args =~ (^|/)claude($|[[:space:]]) ]]; then printf '%s\t%s' "$pid" "$args"; return 0; fi
+    if [[ $args =~ (^|/)claude($|[[:space:]]) ]]; then ANCESTOR=$pid$'\t'$args; printf '%s' "$ANCESTOR"; return 0; fi
     pid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')
     depth=$((depth + 1))
   done
@@ -315,6 +348,7 @@ claude_ancestor() {
 # was created.
 bootstrap_record() { # <sessionId> <cwd>
   local sid=$1 cwd=$2 short=${1:0:8} entry kind window ancestor apid="" aargs pid=0
+  set_now
   # The hook's own claude process, walked out of the process tree: cheap, and
   # it settles the one case we never track. Asking the CLI for the session
   # listing costs a process launch, so a one-shot must be turned away first.
@@ -324,7 +358,7 @@ bootstrap_record() { # <sessionId> <cwd>
     # A `claude -p` one-shot is never a row. Remember that, or every one of its
     # tool calls pays for the same answer.
     if [[ $aargs =~ [[:space:]](-p|--print)([[:space:]]|$) ]]; then
-      : > "$SESSIONS/.ignore-$short"
+      ignore_session "$short" forever
       return 1
     fi
   fi
@@ -343,7 +377,7 @@ bootstrap_record() { # <sessionId> <cwd>
   fi
   window=$(find_window || echo null)
   jq -n --arg short "$short" --arg uuid "$sid" --arg cwd "$cwd" --arg kind "$kind" --argjson window "$window" \
-    --argjson pid "${pid:-0}" --argjson now "$(now_ms)" \
+    --argjson pid "${pid:-0}" --argjson now "$NOW" \
     '{ shortId: $short, sessionId: $uuid, prompt: "", cwd: $cwd, startedAt: $now, updatedAt: $now, finishedAt: 0,
        status: "ready", step: "", reply: "", results: [], pinned: false, kind: $kind, window: $window, pid: $pid }' \
     > "$(session_file "$short").tmp" && mv -f "$(session_file "$short").tmp" "$(session_file "$short")"
@@ -354,17 +388,36 @@ bootstrap_record() { # <sessionId> <cwd>
 # without a record gets one if Claude lists it, so hooks installed after a
 # session started still pick it up. Returns 1 when it is not one to track.
 read_hook() {
+  set_now
   payload=$(cat)
-  sid=$(jq -r '.session_id // empty' <<< "$payload" 2>/dev/null) || return 1
-  [[ -n $sid ]] || return 1
+  { IFS= read -r sid; IFS= read -r hook_cwd; } < <(jq -r '.session_id // "", .cwd // ""' <<< "$payload" 2>/dev/null)
+  [[ -n ${sid:-} ]] || return 1
   short=${sid:0:8}
   # Sessions we have already decided not to track cost nothing from here on.
-  [[ -f $SESSIONS/.ignore-$short ]] && return 1
+  ignored_session "$short" && return 1
   maybe_prune
   # An unreadable record counts as missing, so a damaged one is rebuilt
   # instead of silently swallowing every later update.
-  jq -e . "$(session_file "$short")" >/dev/null 2>&1 && return 0
-  bootstrap_record "$sid" "$(jq -r '.cwd // ""' <<< "$payload")"
+  jq -e . "$SESSIONS/$short.json" >/dev/null 2>&1 && return 0
+  bootstrap_record "$sid" "${hook_cwd:-}" && return 0
+  # Could not be placed (not listed, no matching claude process). Asking again
+  # on every tool call would cost a session listing each time; once a minute
+  # is enough to catch it once it becomes listable.
+  ignored_session "$short" || ignore_session "$short" $((EPOCHSECONDS + 60))
+  return 1
+}
+
+# The marker beside the records for a session we do not track: "forever" for
+# a `claude -p` one-shot or a forgotten row, otherwise the epoch to retry at.
+ignore_session() { printf '%s\n' "$2" > "$SESSIONS/.ignore-$1"; } # <shortId> <forever|epoch>
+ignored_session() { # <shortId>
+  local until="" marker=$SESSIONS/.ignore-$1
+  [[ -f $marker ]] || return 1
+  read -r until < "$marker" 2>/dev/null
+  [[ $until == forever ]] && return 0
+  [[ $until =~ ^[0-9]+$ && EPOCHSECONDS -lt $until ]] && return 0
+  rm -f "$marker"
+  return 1
 }
 
 session_kind() { jq -r '.kind // "voice"' "$(session_file "$1")"; }
@@ -391,13 +444,16 @@ open_attached() { # <shortId>
 
 # ---------------------------------------------------------------- commands
 
+# The microphone opens first: you are already talking, and every record
+# examined before that is a word lost. Housekeeping follows.
 cmd_start() {
-  prune
+  clear_stale_marker
   if [[ -f $MARKER ]]; then cmd_stop; return; fi
   rm -f "$PROMPT_FILE"
   if voxtype record start --file="$PROMPT_FILE" >/dev/null 2>"$RT/stderr"; then
     touch "$MARKER"
     set_status listening
+    prune
   else
     set_status error
     notify -u critical -t 5000 "voxtype is not recording" "$(head -1 "$RT/stderr" 2>/dev/null)"
@@ -409,7 +465,8 @@ cmd_stop() {
   rm -f "$MARKER"
   set_status transcribing
   local text rc
-  text=$(voxtype record stop --wait --timeout "$(setting waitSeconds)" 2>"$RT/stderr")
+  load_settings
+  text=$(voxtype record stop --wait --timeout "$S_WAIT" 2>"$RT/stderr")
   rc=$?
   case $rc in
     0) cmd_dispatch "$text" ;;
@@ -421,10 +478,11 @@ cmd_stop() {
 cmd_dispatch() {
   local text=$1 cwd mode
   [[ -n ${text//[[:space:]]/} ]] || { set_status idle; return; }
-  cwd=$(setting cwd); cwd=${cwd/#\~/$HOME}
-  mode=$(setting permissionMode)
+  load_settings; set_now
+  cwd=${S_CWD/#\~/$HOME}
+  mode=$S_MODE
 
-  if wants_terminal "$text" "$(setting terminalWords)"; then
+  if wants_terminal "$text" "$S_WORDS"; then
     (cd "$cwd" && launch omarchy-launch-tui --app-id=$APP_ID claude --permission-mode "$mode" -- "$text")
     set_status idle
     return
@@ -435,7 +493,7 @@ cmd_dispatch() {
     write_hooks
     settings_args=(--settings "$HOOKS_FILE")
   fi
-  local out short uuid pid
+  local out short
   out=$(cd "$cwd" && claude --bg --name "voice: $(excerpt "$text" 40)" "${settings_args[@]}" \
         --permission-mode "$mode" --append-system-prompt "$VOICE_PROMPT" -- "$text" 2>&1 </dev/null)
   short=$(grep -oiE 'backgrounded[^0-9a-f]*[0-9a-f]{6,}' <<< "$out" | grep -oE '[0-9a-f]{6,}$' | head -1)
@@ -444,28 +502,30 @@ cmd_dispatch() {
     notify -u critical -t 6000 "Claude did not start" "$(head -1 <<< "$out")"
     return 1
   fi
-  # One listing call for both: the uuid to resume with, and the pid that says
-  # later whether the session still has work running.
-  local entry
-  entry=$(agent_entry "$short")
-  uuid=$(jq -r '.sessionId // empty' <<< "$entry" 2>/dev/null)
-  pid=$(jq -r '.pid // 0' <<< "$entry" 2>/dev/null)
-  jq -n --arg short "$short" --arg uuid "$uuid" --arg prompt "$text" --arg cwd "$cwd" \
-    --argjson pid "${pid:-0}" --argjson now "$(now_ms)" \
-    '{ shortId: $short, sessionId: $uuid, prompt: $prompt, cwd: $cwd, startedAt: $now, updatedAt: $now,
-       finishedAt: 0, status: "thinking", step: "", reply: "", results: [], pinned: false, kind: "voice",
-       window: null, pid: $pid }' \
-    > "$(session_file "$short").tmp" && mv -f "$(session_file "$short").tmp" "$(session_file "$short")"
-  write_feed
+  # The uuid and pid arrive with the session's own SessionStart hook about half
+  # a second from now; asking the CLI for them here cost a process launch that
+  # could hang, between letting go of the key and "Working on it". Should that
+  # hook have got here first, its record is kept and filled in.
+  rm -f "$SESSIONS/.ignore-$short"
+  if [[ -s $SESSIONS/$short.json ]] && update_session "$short" --arg prompt "$text" --arg cwd "$cwd" --argjson now "$NOW" \
+       '.prompt = $prompt | .cwd = $cwd | .kind = "voice" | .status = "thinking" | .startedAt = $now | .updatedAt = $now'; then
+    :
+  else
+    jq -n --arg short "$short" --arg prompt "$text" --arg cwd "$cwd" --argjson now "$NOW" \
+      '{ shortId: $short, sessionId: "", prompt: $prompt, cwd: $cwd, startedAt: $now, updatedAt: $now,
+         finishedAt: 0, status: "thinking", step: "", reply: "", results: [], pinned: false, kind: "voice",
+         window: null, pid: 0 }' \
+      > "$SESSIONS/$short.json.tmp" && mv -f "$SESSIONS/$short.json.tmp" "$SESSIONS/$short.json"
+    write_feed
+  fi
   set_status thinking
   notify -u low -t 3000 -g "$ROBOT" "Working on it" "$(excerpt "$text" 120)"
 }
 
 cmd_hook_needs_input() {
-  local payload short sid addr
+  local payload short sid hook_cwd addr
   read_hook || return 0
   update_session "$short" '.status = "needs-input"'
-  recompute_status
   if [[ $(session_kind "$short") == terminal ]]; then
     # It already has a window: bring it forward if you are elsewhere.
     window_unfocused "$short" || return 0
@@ -507,7 +567,7 @@ find_results() { # <reply> <cwd>
 }
 
 cmd_hook_stop() {
-  local payload short sid message reply results cwd argv first_kind first_value
+  local payload short sid hook_cwd message reply results cwd argv first_kind first_value
   read_hook || return 0
   message=$(jq -r '.last_assistant_message // ""' <<< "$payload")
   reply=$(excerpt "$(plain_text "$message")" 2000)
@@ -516,9 +576,8 @@ cmd_hook_stop() {
   jq -e . >/dev/null 2>&1 <<< "$results" || results='[]'
   local final=done
   has_background_tasks "$short" && final=waiting
-  update_session "$short" --arg status "$final" --arg reply "$reply" --argjson results "$results" --argjson now "$(now_ms)" \
+  update_session "$short" --arg status "$final" --arg reply "$reply" --argjson results "$results" --argjson now "$NOW" \
     '.status = $status | .reply = $reply | .results = $results | .finishedAt = $now | .updatedAt = $now'
-  recompute_status
   [[ $final == done ]] || return 0
   if [[ $(session_kind "$short") == terminal ]]; then
     window_unfocused "$short" || return 0
@@ -536,54 +595,61 @@ cmd_hook_stop() {
 }
 
 # PreToolUse: turn the tool call into a one-line progress note for the row.
+# The note is computed by the same jq that updates the record: this hook
+# blocks the tool call, so it spends as few processes as it can.
 cmd_hook_tool() {
-  local payload short sid step
+  local payload short sid hook_cwd
   read_hook || return 0
-  step=$(jq -r '
-    def base: tostring | split("/") | last;
-    (.tool_name // "") as $t | (.tool_input // {}) as $i |
-    if $t == "Bash" then "Running: " + (($i.description // "") | if . == "" then ($i.command // "") else . end)
-    elif $t == "Edit" or $t == "MultiEdit" then "Editing " + (($i.file_path // "") | base)
-    elif $t == "Write" then "Writing " + (($i.file_path // "") | base)
-    elif $t == "Read" then "Reading " + (($i.file_path // "") | base)
-    elif $t == "Grep" or $t == "Glob" then "Searching for " + ($i.pattern // "")
-    elif $t == "WebFetch" then "Fetching " + (($i.url // "") | sub("^[a-z]+://"; "") | split("/")[0])
-    elif $t == "WebSearch" then "Searching the web"
-    elif $t == "Agent" or $t == "Task" then "Delegating: " + ($i.description // "")
-    elif $t == "AskUserQuestion" then "Asking you a question"
-    else "Using " + $t end' <<< "$payload" 2>/dev/null)
   # A Stop fires at the end of every turn, but a background task or a typed
   # follow-up starts a new one: any tool call on a finished session means it
   # is working again.
-  update_session "$short" --arg step "$(excerpt "$step" 80)" --argjson now "$(now_ms)" \
-    '.step = $step | .updatedAt = $now
-     | if .status == "done" or .status == "stopped" or .status == "waiting" or .status == "ready" then .status = "thinking" else . end'
-  recompute_status
+  update_session "$short" --argjson p "$payload" --argjson now "$NOW" '
+    def base: tostring | split("/") | last;
+    def excerpt($n): gsub("\\s+"; " ") | ltrimstr(" ") | rtrimstr(" ") | if length > $n then .[:$n - 1] + "…" else . end;
+    ($p.tool_name // "") as $t | ($p.tool_input // {}) as $i
+    | (if $t == "Bash" then "Running: " + (($i.description // "") | if . == "" then ($i.command // "") else . end)
+       elif $t == "Edit" or $t == "MultiEdit" then "Editing " + (($i.file_path // "") | base)
+       elif $t == "Write" then "Writing " + (($i.file_path // "") | base)
+       elif $t == "Read" then "Reading " + (($i.file_path // "") | base)
+       elif $t == "Grep" or $t == "Glob" then "Searching for " + ($i.pattern // "")
+       elif $t == "WebFetch" then "Fetching " + (($i.url // "") | sub("^[a-z]+://"; "") | split("/")[0])
+       elif $t == "WebSearch" then "Searching the web"
+       elif $t == "Agent" or $t == "Task" then "Delegating: " + ($i.description // "")
+       elif $t == "AskUserQuestion" then "Asking you a question"
+       else "Using " + $t end | excerpt(80)) as $step
+    | .step = $step | .updatedAt = $now
+    | if .status == "done" or .status == "stopped" or .status == "waiting" or .status == "ready" then .status = "thinking" else . end'
 }
 
 # UserPromptSubmit: the user (or a background-task notification) started a
 # new turn, so the session is busy again with no step yet.
 cmd_hook_prompt() {
-  local payload short sid title
+  local payload short sid hook_cwd title
   read_hook || return 0
   title=$(excerpt "$(jq -r '.prompt // ""' <<< "$payload")" 200)
   # Task notifications and other injected turns arrive as "<...>" prompts;
   # they are not what the user asked for.
   [[ $title == "<"* ]] && title=""
-  update_session "$short" --arg title "$title" --argjson now "$(now_ms)" \
+  update_session "$short" --arg title "$title" --argjson now "$NOW" \
     '.step = "" | .updatedAt = $now
      | if .prompt == "" and $title != "" then .prompt = $title else . end
      | if .status == "done" or .status == "stopped" or .status == "waiting" or .status == "ready" then .status = "thinking" else . end'
-  recompute_status
 }
 
-# SessionStart: make sure the session has a record and knows its window.
+# SessionStart: make sure the session has a record and knows its window, its
+# uuid and its Claude process. For a voice session this is where the uuid and
+# pid come from: the hook runs under the session's own process, and the
+# payload carries the full session id.
 cmd_hook_start() {
-  local payload short sid window
+  local payload short sid hook_cwd window ancestor apid=0
   read_hook || return 0
   window=$(find_window || echo null)
-  update_session "$short" --argjson window "$window" --arg cwd "$(jq -r '.cwd // ""' <<< "$payload")" \
-    'if $window != null then .window = $window else . end | if $cwd != "" then .cwd = $cwd else . end'
+  if ancestor=$(claude_ancestor); then apid=${ancestor%%$'\t'*}; fi
+  update_session "$short" --argjson window "$window" --arg cwd "${hook_cwd:-}" --arg sid "$sid" --argjson apid "${apid:-0}" \
+    'if $window != null then .window = $window else . end
+     | if $cwd != "" then .cwd = $cwd else . end
+     | if (.sessionId // "") == "" then .sessionId = $sid else . end
+     | if (.pid // 0) == 0 and $apid > 0 then .pid = $apid else . end'
 }
 
 # ---- hooks in ~/.claude/settings.json
@@ -632,21 +698,22 @@ cmd_hooks() {
 # A session that ends without a Stop (claude stop, closed terminal, crash) must
 # not keep the bar on needs-input; a finished one keeps its reply.
 cmd_hook_end() {
-  local payload short sid
+  local payload short sid hook_cwd
   read_hook || return 0
   update_session "$short" 'if .status == "done" then . else .status = "stopped" end'
-  recompute_status
 }
 
 cmd_open() { [[ -n ${1:-} ]] && launch xdg-open "$1"; }
 
+# A forgotten row stays forgotten: without the marker the session's next hook
+# would rebuild it, paying a session listing and coming back with no title.
 cmd_forget() {
   local short=${1:-}
-  [[ -n $short && -f $(session_file "$short") ]] || return 0
-  rm -f "$(session_file "$short")"
+  [[ -n $short && -f $SESSIONS/$short.json ]] || return 0
+  ignore_session "$short" forever
+  rm -f "$SESSIONS/$short.json" "$SESSIONS/.$short.lock"
   claude rm "$short" >/dev/null 2>&1 </dev/null
   write_feed
-  recompute_status
 }
 
 cmd_pin() {

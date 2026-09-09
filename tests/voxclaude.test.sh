@@ -25,7 +25,7 @@ make_stub() {
 }
 make_stub voxtype '
 case "$1 $2" in
-  "record start") exit "$VOXTYPE_START_EXIT" ;;
+  "record start") [[ -n ${JQ_COUNT:-} ]] && wc -l < "$JQ_COUNT" > "$JQ_COUNT.at-record-start"; exit "$VOXTYPE_START_EXIT" ;;
   "record stop") [[ $VOXTYPE_STOP_EXIT == 0 ]] && printf "%s\n" "$VOXTYPE_TEXT"; [[ $VOXTYPE_STOP_EXIT == 1 ]] && echo "daemon exploded" >&2; exit "$VOXTYPE_STOP_EXIT" ;;
 esac'
 make_stub claude '
@@ -110,7 +110,7 @@ check "hooks.json points Stop at this script" bash -c "jq -e --arg s \"$script h
 check "hooks.json ends sessions through this script" bash -c "jq -e --arg s \"$script hook end\" '.hooks.SessionEnd[0].hooks[0].command == \$s' '$RT/hooks.json' >/dev/null"
 check "hooks.json watches the needs-input notifications" bash -c "jq -e '.hooks.Notification[0].matcher == \"permission_prompt|agent_needs_input|elicitation_dialog|elicitation_url_dialog\"' '$RT/hooks.json' >/dev/null"
 check "session record written under the short id" test -f "$RT/sessions/abcd1234.json"
-check "session record carries prompt, uuid and status" bash -c "jq -e '.shortId == \"abcd1234\" and .prompt == \"create hello.txt with hi\" and .status == \"thinking\" and .sessionId == \"abcd1234-0000-4000-8000-000000000000\" and (.startedAt > 0)' '$RT/sessions/abcd1234.json' >/dev/null"
+check "session record carries prompt and status" bash -c "jq -e '.shortId == \"abcd1234\" and .prompt == \"create hello.txt with hi\" and .status == \"thinking\" and (.startedAt > 0)' '$RT/sessions/abcd1234.json' >/dev/null"
 check "headless sets status thinking" test "$(status)" = thinking
 check "headless toast names the prompt" called $'omarchy-notification-send\t.*create hello.txt'
 check "headless tells Claude it was launched by voice" called -- '--append-system-prompt .*cannot see'
@@ -393,6 +393,7 @@ done
 count_hook "$tmp/jq-many" '{"session_id":"abcd1234-0000-4000-8000-000000000000","hook_event_name":"PreToolUse","tool_name":"Read","tool_input":{"file_path":"/x/b.md"}}'
 check "a hook costs the same with 13 records as with one" \
   test "$(wc -l < "$tmp/jq-one")" = "$(wc -l < "$tmp/jq-many")"
+check "a tool hook spends at most 4 jq calls" test "$(wc -l < "$tmp/jq-one")" -le 4
 check "every record still reaches the feed" bash -c "jq -e 'length == 13' '$RT/sessions.json' >/dev/null"
 rm -f "$RT"/sessions/extra0*.json
 "$script" hook tool <<< '{"session_id":"abcd1234-0000-4000-8000-000000000000","hook_event_name":"PreToolUse","tool_name":"Read","tool_input":{"file_path":"/x/c.md"}}'
@@ -400,13 +401,64 @@ rm -f "$RT/sessions.json"
 "$script" hook tool <<< '{"session_id":"abcd1234-0000-4000-8000-000000000000","hook_event_name":"PreToolUse","tool_name":"Read","tool_input":{"file_path":"/x/d.md"}}'
 check "a missing feed still sets the bar status" test "$(status)" = thinking
 
-# ---- the claude pid is remembered, not looked up every turn ----------------------
-reset; CLAUDE_STUB_PID=$$ VOXTYPE_TEXT="do a thing" "$script" stop
-check "dispatch remembers the claude pid" bash -c "jq -e '.pid == $$' '$RT/sessions/abcd1234.json' >/dev/null"
+# ---- the release path never waits on the session listing --------------------------
+# claude --bg returns in about half a second and the session's own SessionStart
+# hook fires half a second after that, under a process whose pid is the session.
+reset; : > "$LOG"; VOXTYPE_TEXT="do a thing" "$script" stop
+check "dispatch never asks claude for the session list" not_called $'claude\t.*\tagents'
+check "dispatch records the session before its uuid is known" bash -c "jq -e '.shortId == \"abcd1234\" and .status == \"thinking\"' '$RT/sessions/abcd1234.json' >/dev/null"
+: > "$LOG"
+printf '%s' "{\"session_id\":\"abcd1234-0000-4000-8000-000000000000\",\"hook_event_name\":\"SessionStart\",\"source\":\"startup\",\"cwd\":\"$HOME/Work\"}" \
+  | "$tmp/bin/claude" wrap bash -c "'$script' hook start; sleep 30" &
+wrapper=$!
+for i in 1 2 3 4 5 6 7 8 9 10; do jq -e '.pid > 0' "$RT/sessions/abcd1234.json" >/dev/null 2>&1 && break; sleep 0.2; done
+check "session start fills in the uuid of a voice session" bash -c "jq -e '.sessionId == \"abcd1234-0000-4000-8000-000000000000\"' '$RT/sessions/abcd1234.json' >/dev/null"
+check "session start remembers the pid of the process it runs under" bash -c "jq -e '.pid > 0 and (.pid | tostring | . as \$p | \"/proc/\" + \$p | test(\"^/proc/[0-9]+\$\"))' '$RT/sessions/abcd1234.json' >/dev/null && test -d /proc/\$(jq -r .pid '$RT/sessions/abcd1234.json')"
+check "session start keeps the voice record's prompt and kind" bash -c "jq -e '.prompt == \"do a thing\" and .kind == \"voice\"' '$RT/sessions/abcd1234.json' >/dev/null"
+check "session start on a known session never asks claude for the list" not_called $'claude\t.*\tagents'
 : > "$LOG"
 printf '%s' '{"session_id":"abcd1234-0000-4000-8000-000000000000","hook_event_name":"Stop","last_assistant_message":"done"}' | "$script" hook stop
 check "stop with a known pid never asks claude for the session list" not_called $'claude\t.*\tagents'
 check "stop with a known pid still finishes the session" bash -c "jq -e '.status == \"done\"' '$RT/sessions/abcd1234.json' >/dev/null"
+pkill -P "$wrapper" 2>/dev/null; kill "$wrapper" 2>/dev/null; wait "$wrapper" 2>/dev/null || true
+: > "$tmp/jq-dispatch"
+JQ_COUNT="$tmp/jq-dispatch" PATH="$tmp/countbin:$PATH" "$script" dispatch "budget check" >/dev/null 2>&1 || true
+check "dispatch reads all its settings in one pass (at most 6 jq calls)" test "$(wc -l < "$tmp/jq-dispatch")" -le 6
+
+# ---- the mic opens before any housekeeping -----------------------------------------
+reset; VOXTYPE_TEXT="do a thing" "$script" stop
+for i in $(seq 1 20); do
+  jq --arg s "stale$i" '.shortId = $s' "$RT/sessions/abcd1234.json" > "$RT/sessions/stale$i.json"
+  touch -d '2 days ago' "$RT/sessions/stale$i.json"
+done
+: > "$tmp/jq-start"
+JQ_COUNT="$tmp/jq-start" PATH="$tmp/countbin:$PATH" "$script" start
+check "the mic opens before any record is examined" test "$(cat "$tmp/jq-start.at-record-start" 2>/dev/null)" = 0
+# One jq reads every stale record's pin, one rewrites the feed afterwards.
+check "pruning 20 stale records costs two jq, not one per record" test "$(wc -l < "$tmp/jq-start")" -le 2
+check "stale records are still pruned on the key" bash -c "! ls '$RT'/sessions/stale*.json >/dev/null 2>&1"
+VOXTYPE_STOP_EXIT=3 "$script" stop
+
+# ---- forgotten sessions stay forgotten ---------------------------------------------
+reset; VOXTYPE_TEXT="do a thing" "$script" stop
+"$script" forget abcd1234; : > "$LOG"
+printf '%s' '{"session_id":"abcd1234-0000-4000-8000-000000000000","hook_event_name":"PreToolUse","tool_name":"Read","tool_input":{"file_path":"/x/y.md"}}' | "$script" hook tool || true
+check "a forgotten session does not come back on its next hook" test ! -f "$RT/sessions/abcd1234.json"
+check "a forgotten session's hooks never ask claude for the list" not_called $'claude\t.*\tagents'
+check "forget drops the record's lock file" test ! -f "$RT/sessions/.abcd1234.lock"
+reset; VOXTYPE_TEXT="do a thing" "$script" stop
+jq '.shortId = "old00003"' "$RT/sessions/abcd1234.json" > "$RT/sessions/old00003.json"; : > "$RT/sessions/.old00003.lock"
+touch -d '2 days ago' "$RT/sessions/old00003.json" "$RT/sessions/.old00003.lock"; rm -f "$RT/.pruned"
+"$script" hook tool <<< '{"session_id":"abcd1234-0000-4000-8000-000000000000","hook_event_name":"PreToolUse","tool_name":"Read","tool_input":{"file_path":"/x/f.md"}}'
+check "prune drops the lock file of a pruned record" test ! -f "$RT/sessions/.old00003.lock"
+
+# ---- a session that cannot be placed is retried at most once a minute ------------
+: > "$LOG"
+for i in 1 2 3; do
+  printf '%s' "{\"session_id\":\"deadbeef-0000-4000-8000-000000000000\",\"hook_event_name\":\"PreToolUse\",\"tool_name\":\"Read\",\"tool_input\":{\"file_path\":\"x\"},\"cwd\":\"$HOME/Elsewhere\"}" | "$script" hook tool || true
+done
+check "an unplaceable session asks claude for the list once, not per tool call" test "$(grep -c 'agents' "$LOG")" = 1
+check "an unplaceable session still gets no record" test ! -f "$RT/sessions/deadbeef.json"
 
 # ---- sessions we never track cost nothing ----------------------------------------
 : > "$LOG"

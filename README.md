@@ -140,12 +140,21 @@ watched by the widget), `hooks.json` (the session-scoped Claude hooks) and
 voxtype's `prompt.txt`.
 
 A `PreToolUse` hook blocks the tool call that fired it, in every session on
-the machine, so the script keeps that path cheap: one `jq` over the whole
-record set rather than one per record, the bar status read back from the
-feed it just wrote, the session's Claude pid remembered on the record
-instead of asked for (`claude agents --json` costs a process launch), and a
-marker beside the records for sessions already ruled out, so a `claude -p`
-one-shot decides that once instead of on every tool call.
+the machine, so the script keeps that path cheap: four `jq` calls per hook
+whatever the backlog. One reads the payload, one checks the record, one
+updates it with the progress note computed inside the same filter, and one
+sorts the whole set into the feed while deciding the bar word. The session's
+Claude pid is remembered on the record instead of asked for (`claude agents
+--json` costs a process launch), and a marker beside the records says which
+sessions are not tracked: a `claude -p` one-shot or a forgotten row for good,
+a session that could not be placed for a minute before it is tried again.
+
+The two paths you can feel are kept short too. On the key press the
+microphone opens before any housekeeping. On the release, once the transcript
+is in, one `jq` reads every setting, and the record is written the moment
+`claude --bg` returns: the session's uuid and pid arrive with its own
+`SessionStart` hook about half a second later, so nothing between letting go
+of the key and "Working on it" waits on the session listing.
 
 Findings from the CLI this was built against (Claude Code 2.1.266):
 
@@ -164,10 +173,13 @@ Findings from the CLI this was built against (Claude Code 2.1.266):
 - Nothing heard (voxtype exit 3) → quiet toast, back to idle.
 - voxtype daemon down or Claude not logged in → error glyph plus a toast with
   the first line of stderr. `voxclaude status` prints the current word.
-- Records older than a day are pruned, both when you hold the key and, at most
-  once an hour, from the hooks themselves, so a machine that only tracks
-  terminal sessions does not pile them up. The bar status is recomputed from
-  the records on every hook, so a lost notification cannot wedge the glyph.
+- Records older than a day are pruned (with their lock files), both after the
+  microphone opens when you hold the key and, at most once an hour, from the
+  hooks themselves, so a machine that only tracks terminal sessions does not
+  pile them up. The bar status is recomputed from the records on every hook,
+  so a lost notification cannot wedge the glyph.
+- Forgetting a row is final for that session: its later hooks are ignored, so
+  it cannot come back untitled at its next tool call.
 - Clicking a row seems to do nothing: the attach window opened as a tile
   behind your floating or maximized terminal. Add the window rules from the
   Install section.
