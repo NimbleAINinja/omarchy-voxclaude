@@ -1,0 +1,201 @@
+import QtQuick
+import QtTest
+import "../.." as Plugin
+
+// Headless checks for SessionList.qml: pure QtQuick, no Quickshell imports.
+TestCase {
+  id: suite
+  name: "SessionList"
+  width: 360
+  height: 300
+  when: windowShown
+  visible: true
+
+  Component {
+    id: listComponent
+    Plugin.SessionList {
+      width: 360
+      nowMs: 1000000000
+    }
+  }
+
+  function sessions() {
+    return [
+      { shortId: "aaaa1111", status: "done", startedAt: 1000000000 - 3600000, prompt: "  first   thing ", reply: "ok" },
+      { shortId: "bbbb2222", status: "needs-input", startedAt: 1000000000 - 120000, prompt: "second thing", reply: "" },
+      { shortId: "cccc3333", status: "thinking", startedAt: 1000000000 - 5000, prompt: "third " + "x".repeat(200), reply: "" }
+    ]
+  }
+
+  function makeList(props) {
+    var list = createTemporaryObject(listComponent, suite, props || {})
+    verify(list !== null)
+    return list
+  }
+
+  function test_rows_follow_sort_order() {
+    var list = makeList({ sessions: sessions() })
+    compare(list.count, 3)
+    compare(list.rowAt(0).shortId, "bbbb2222")
+    compare(list.rowAt(1).shortId, "cccc3333")
+    compare(list.rowAt(2).shortId, "aaaa1111")
+  }
+
+  function test_row_text_is_excerpt_label_and_time() {
+    var list = makeList({ sessions: sessions() })
+    var row = list.rowAt(2)
+    compare(row.promptText, "first thing")
+    compare(row.statusText, "Done")
+    compare(row.timeText, "1h ago")
+    compare(list.rowAt(1).promptText.length, 140)
+  }
+
+  function test_row_cap() {
+    var many = []
+    for (var i = 0; i < 20; i++) many.push({ shortId: "id" + i, status: "done", startedAt: i, prompt: "p" + i })
+    var list = makeList({ sessions: many, maxRows: 8 })
+    compare(list.count, 8)
+    compare(list.rowAt(0).shortId, "id19")
+  }
+
+  function test_click_requests_attach() {
+    var list = makeList({ sessions: sessions() })
+    var seen = []
+    list.attachRequested.connect(function(id) { seen.push(id) })
+    var row = list.rowAt(1)
+    mouseClick(row, row.width / 2, row.height / 2)
+    compare(seen, ["cccc3333"])
+  }
+
+  function test_subtitle_reply_and_chips() {
+    var list = makeList({ sessions: [
+      { shortId: "run1", status: "thinking", startedAt: 1000000000 - 240000, prompt: "build it", step: "Editing App.jsx" },
+      { shortId: "done1", status: "done", startedAt: 1000000000 - 3600000, finishedAt: 1000000000 - 3000000, prompt: "made it",
+        reply: "Built it.   Open http://localhost:5173/ to see it.",
+        results: [{ kind: "url", value: "http://localhost:5173/" }, { kind: "path", value: "/home/x/Work/plants/index.html" }] }
+    ] })
+    compare(list.rowAt(0).subtitleText, "Claude is working · 4m · Editing App.jsx")
+    compare(list.rowAt(0).replyText, "")
+    compare(list.rowAt(0).chipCount, 0)
+    compare(list.rowAt(1).subtitleText, "Done · 50m ago")
+    compare(list.rowAt(1).replyText, "Built it. Open http://localhost:5173/ to see it.")
+    var md = makeList({ sessions: [
+      { shortId: "m", status: "done", startedAt: 1, prompt: "p", reply: "**Done.** See `index.html` in [the repo](https://x.y)." }
+    ] })
+    compare(md.rowAt(0).replyText, "Done. See index.html in the repo.")
+    compare(list.rowAt(1).chipCount, 2)
+    compare(list.rowAt(1).chipAt(0).label, "localhost:5173")
+  }
+
+  function test_chip_click_requests_open_not_attach() {
+    var list = makeList({ sessions: [
+      { shortId: "done1", status: "done", startedAt: 1, prompt: "p", reply: "r",
+        results: [{ kind: "url", value: "http://localhost:5173/" }] }
+    ] })
+    var opened = [], attached = []
+    list.openRequested.connect(function(v) { opened.push(v) })
+    list.attachRequested.connect(function(id) { attached.push(id) })
+    var chip = list.rowAt(0).chipAt(0)
+    mouseClick(chip, chip.width / 2, chip.height / 2)
+    compare(opened, ["http://localhost:5173/"])
+    compare(attached, [])
+  }
+
+  function test_right_click_requests_forget() {
+    var list = makeList({ sessions: sessions() })
+    var forgotten = []
+    list.forgetRequested.connect(function(id) { forgotten.push(id) })
+    var row = list.rowAt(0)
+    mouseClick(row, row.width / 2, 10, Qt.RightButton)
+    compare(forgotten, ["bbbb2222"])
+  }
+
+  function test_cursor_follows_keyboard() {
+    var list = makeList({ sessions: sessions() })
+    compare(list.cursor, -1)
+    list.moveCursor(1)
+    compare(list.cursor, 0)
+    list.moveCursor(1)
+    compare(list.cursor, 1)
+    list.moveCursor(-5)
+    compare(list.cursor, 0)
+    verify(list.rowAt(0).hasCursor)
+    verify(!list.rowAt(1).hasCursor)
+    compare(list.cursorId(), "bbbb2222")
+  }
+
+  function test_pin_is_the_only_hover_action() {
+    var list = makeList({ sessions: [
+      { shortId: "p1", status: "done", startedAt: 2, prompt: "pinned one", pinned: true },
+      { shortId: "u1", status: "done", startedAt: 1, prompt: "plain one" }
+    ] })
+    var pinned = list.rowAt(0), plain = list.rowAt(1)
+    verify(pinned.pinned)
+    verify(!plain.pinned)
+    verify(pinned.pinButton.shown)
+    verify(!plain.pinButton.shown)
+    // The slot is always laid out so the prompt never reflows on hover.
+    verify(plain.pinButton.visible)
+    var widthBefore = plain.promptWidth
+    list.cursor = 1
+    verify(plain.pinButton.shown)
+    compare(plain.promptWidth, widthBefore)
+    verify(plain.removeButton === undefined)
+    verify(plain.openHint === undefined)
+  }
+
+  function test_pin_button_does_not_open_the_row() {
+    var list = makeList({ sessions: sessions() })
+    list.cursor = 0
+    var pins = [], attaches = []
+    list.pinRequested.connect(function(id) { pins.push(id) })
+    list.attachRequested.connect(function(id) { attaches.push(id) })
+    var row = list.rowAt(0)
+    mouseClick(row.pinButton, row.pinButton.width / 2, row.pinButton.height / 2)
+    compare(pins, ["bbbb2222"])
+    compare(attaches, [])
+  }
+
+  function test_status_colour_follows_tone() {
+    var list = makeList({ okColor: "#00ff00", busyColor: "#ffff00", urgent: "#ff0000", dim: "#808080", sessions: [
+      { shortId: "d", status: "done", startedAt: 4, prompt: "a" },
+      { shortId: "t", status: "thinking", startedAt: 3, prompt: "b" },
+      { shortId: "n", status: "needs-input", startedAt: 2, prompt: "c" },
+      { shortId: "s", status: "stopped", startedAt: 1, prompt: "d" }
+    ] })
+    compare(String(list.rowAt(0).toneColor), "#ff0000")
+    compare(String(list.rowAt(1).toneColor), "#00ff00")
+    compare(String(list.rowAt(2).toneColor), "#ffff00")
+    compare(String(list.rowAt(3).toneColor), "#808080")
+  }
+
+  function test_terminal_rows_show_their_origin() {
+    var list = makeList({ sessions: [
+      { shortId: "t", status: "done", startedAt: 2, prompt: "from a terminal", kind: "terminal" },
+      { shortId: "v", status: "done", startedAt: 1, prompt: "from voice" }
+    ] })
+    verify(list.rowAt(0).kindGlyph !== "")
+    verify(list.rowAt(0).kindGlyph !== list.rowAt(1).kindGlyph)
+  }
+
+  function test_user_text_is_never_rendered_as_markup() {
+    // Prompts and replies are arbitrary text; Text.AutoText would interpret
+    // anything that looks like HTML (tags stripped, remote images fetched).
+    var list = makeList({ sessions: [
+      { shortId: "m", status: "done", startedAt: 1, prompt: "<b>drop</b> the <table> tag",
+        reply: "wrote <img src=\"http://x/y.png\"> to disk",
+        results: [{ kind: "path", value: "/tmp/<b>odd</b>/file.txt" }] }
+    ] })
+    var row = list.rowAt(0)
+    compare(row.promptFormat, Text.PlainText)
+    compare(row.replyFormat, Text.PlainText)
+    compare(row.chipAt(0).labelFormat, Text.PlainText)
+    compare(row.promptText, "<b>drop</b> the <table> tag")
+  }
+
+  function test_empty_state() {
+    var list = makeList({ sessions: [] })
+    compare(list.count, 0)
+    verify(list.emptyVisible)
+  }
+}

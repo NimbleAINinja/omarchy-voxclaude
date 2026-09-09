@@ -1,0 +1,69 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.nimbleaininja.voxclaude",
+  "name": "VoxClaude",
+  "version": "0.1.0",
+  "author": "hydrox",
+  "license": "MIT",
+  "description": "Hold a key, say what you want, and Claude Code does it in the background. A terminal opens only when you ask for one or Claude needs you.",
+  "keywords": [
+    "claude",
+    "voice",
+    "dictation",
+    "voxtype",
+    "agent"
+  ],
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "VoxClaude",
+    "description": "Status of voice-launched Claude Code sessions, with a list of recent ones to reattach.",
+    "category": "AI",
+    "aliases": ["voxclaude", "voice-claude"],
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "cwd": "~/Work",
+      "permissionMode": "auto",
+      "terminalWords": "terminal",
+      "waitSeconds": 60
+    },
+    "schema": [
+      {
+        "key": "cwd",
+        "type": "path",
+        "label": "Working directory",
+        "defaultValue": "~/Work",
+        "description": "Where voice-launched Claude sessions start."
+      },
+      {
+        "key": "permissionMode",
+        "type": "enum",
+        "label": "Permission mode",
+        "options": ["auto", "acceptEdits", "bypassPermissions", "default"],
+        "defaultValue": "auto",
+        "description": "Passed to claude --permission-mode. Anything that would prompt opens a terminal attached to the session."
+      },
+      {
+        "key": "terminalWords",
+        "type": "string",
+        "label": "Terminal trigger words",
+        "defaultValue": "terminal",
+        "description": "Comma-separated words. If you say one of them, Claude opens in a terminal instead of the background."
+      },
+      {
+        "key": "waitSeconds",
+        "type": "integer",
+        "label": "Transcription timeout (seconds)",
+        "min": 10,
+        "max": 300,
+        "step": 5,
+        "defaultValue": 60
+      }
+    ]
+  }
+}

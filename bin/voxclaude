@@ -1,0 +1,641 @@
+#!/usr/bin/env bash
+# voxclaude — hold-to-talk Claude Code for the Omarchy shell.
+#
+#   voxclaude start              press: start recording (voxtype writes to a file)
+#   voxclaude stop               release: wait for the transcript, then dispatch
+#   voxclaude dispatch <text>    run text through Claude (background or terminal)
+#   voxclaude hook needs-input   Claude Code Notification hook (stdin JSON)
+#   voxclaude hook stop          Claude Code Stop hook (stdin JSON)
+#   voxclaude hook end           Claude Code SessionEnd hook (stdin JSON)
+#   voxclaude hook tool          Claude Code PreToolUse hook (stdin JSON): progress line
+#   voxclaude hook prompt        Claude Code UserPromptSubmit hook: session is busy again
+#   voxclaude open <url|path>    open a result with xdg-open
+#   voxclaude forget <id>        drop a session record (and the background session)
+#   voxclaude pin <id>           toggle a record's pin (kept at the top, never pruned)
+#   voxclaude hook start         Claude Code SessionStart hook: track terminal sessions
+#   voxclaude hooks install      put the hooks in ~/.claude/settings.json (all sessions)
+#   voxclaude hooks uninstall    remove them again; hooks status says which
+#   voxclaude attach <id|latest> open a terminal attached to a session
+#   voxclaude list --json        session records as a JSON array
+#   voxclaude status             current bar status word
+#
+# State lives in $XDG_RUNTIME_DIR/voxclaude: status (one word), recording
+# (marker while the key is held), prompt.txt (voxtype's transcript),
+# hooks.json (session-scoped Claude hooks), sessions/<shortId>.json and
+# sessions.json (the aggregated feed the bar widget watches).
+set -uo pipefail
+
+PLUGIN_ID=io.github.nimbleaininja.voxclaude
+APP_ID=org.omarchy.voxclaude
+NEEDS_INPUT_TYPES="permission_prompt|agent_needs_input|elicitation_dialog|elicitation_url_dialog"
+ROBOT=$'\xf3\xb1\x9a\xa3' # nf-md-robot, same glyph as the Agents widget
+VOICE_PROMPT="You were launched by voice from a desktop widget (VoxClaude). The user cannot see this terminal unless they choose to open it, so work autonomously and keep replies short. End your final message with one line saying where the result is (a file path or URL) whenever there is one, and name any command they must run to see it."
+
+self=$(realpath "${BASH_SOURCE[0]}")
+plugin_dir=$(dirname "$(dirname "$self")")
+RT=${XDG_RUNTIME_DIR:-/tmp}/voxclaude
+SESSIONS=$RT/sessions
+PROMPT_FILE=$RT/prompt.txt
+MARKER=$RT/recording
+STATUS_FILE=$RT/status
+HOOKS_FILE=$RT/hooks.json
+FEED_FILE=$RT/sessions.json
+SETTINGS=${CLAUDE_SETTINGS:-$HOME/.claude/settings.json}
+mkdir -p "$SESSIONS"
+
+# ---------------------------------------------------------------- helpers
+
+# Widget settings: the inline entry in shell.json wins, manifest defaults fill in.
+setting() {
+  local value
+  value=$(jq -r --arg id "$PLUGIN_ID" --arg k "$1" \
+    '[.bar.layout[]?[]? | select(.id == $id) | .[$k] | select(. != null)] | first // empty' \
+    "$HOME/.config/omarchy/shell.json" 2>/dev/null)
+  if [[ -z $value ]]; then
+    value=$(jq -r --arg k "$1" '.barWidget.defaults[$k] // empty' "$plugin_dir/manifest.json")
+  fi
+  printf '%s' "$value"
+}
+
+atomic_write() { # <path> <content>
+  local tmp; tmp=$(mktemp "$1.XXXXXX") || return 1
+  if printf '%s\n' "$2" > "$tmp"; then mv -f "$tmp" "$1"; else rm -f "$tmp"; return 1; fi
+}
+
+set_status() { atomic_write "$STATUS_FILE" "$1"; }
+
+# Bar status follows the session records: needs-input, then thinking, then
+# waiting (a background task will wake the session), then idle.
+#
+# start/stop own the capture words, and the error word stands until the next
+# recording. Hooks fire constantly once the global hooks are installed, so
+# without this guard an unrelated session would cancel "listening" mid-hold.
+# A word is only written when one was actually computed: a damaged record
+# must never blank the bar.
+recompute_status() {
+  local current word
+  [[ -f $MARKER ]] && return 0
+  current=$(cat "$STATUS_FILE" 2>/dev/null); current=${current//[[:space:]]/}
+  case $current in listening|transcribing|error) return 0 ;; esac
+  word=$(list_json | jq -r '
+    if any(.[]; .status == "needs-input") then "needs-input"
+    elif any(.[]; .status == "thinking") then "thinking"
+    elif any(.[]; .status == "waiting") then "waiting"
+    else "idle" end') || return 0
+  [[ -n $word ]] && set_status "$word"
+  return 0
+}
+
+# The Claude process behind a session, via the session listing. Background
+# sessions carry a short id, interactive ones only the UUID, so match either.
+agent_entry() { # <shortId>
+  claude agents --json 2>/dev/null | jq -c --arg id "$1" \
+    '[.[] | select(.id == $id or ((.sessionId // "") | startswith($id)))] | first // empty'
+}
+session_pid() { agent_entry "$1" | jq -r '.pid // empty'; }
+
+# Claude's Stop fires when its turn ends, even while a command it started in
+# the background is still running (a build poll, a dev server) and will wake
+# it later. Those commands are shells sourcing a Claude "shell-snapshots"
+# file, spawned directly under the Claude process.
+has_background_tasks() { # <shortId>
+  local pid; pid=$(session_pid "$1")
+  [[ -n $pid && $pid != 0 ]] || return 1
+  pgrep -P "$pid" -f 'shell-snapshots' >/dev/null 2>&1
+}
+
+notify() { omarchy-notification-send "$@" >/dev/null 2>&1 </dev/null; }
+
+# Markdown → prose, mirroring Model.plainText: drop code fences and ticks,
+# keep link text, strip headings, bullets and emphasis markers.
+plain_text() {
+  printf '%s\n' "$1" | sed -E \
+    -e '/^[[:space:]]*```/d' \
+    -e 's/`([^`]*)`/\1/g' \
+    -e 's/!?\[([^]]*)\]\([^)]*\)/\1/g' \
+    -e 's/^[[:space:]]*#{1,6}[[:space:]]+//' \
+    -e 's/^[[:space:]]*([-*+]|[0-9]+\.)[[:space:]]+//' \
+    -e 's/(\*\*|__)([^*_][^*_]*)\1/\2/g' \
+    -e 's/(^|[[:space:](])[*_]([^*_[:space:]][^*_]*)[*_]([[:space:]).,;:!?]|$)/\1\2\3/g'
+}
+
+# Collapse whitespace and cut to N characters with an ellipsis. Mirrors Model.excerpt.
+excerpt() { # <text> <max>
+  local clean
+  clean=$(printf '%s' "$1" | tr -s '[:space:]' ' ' | sed 's/^ //; s/ $//')
+  if (( ${#clean} > $2 )); then printf '%s…' "${clean:0:$(($2 - 1))}"; else printf '%s' "$clean"; fi
+}
+
+# "terminal, shell" -> "terminal|shell" as an ERE alternation. Mirrors Model.terminalPattern.
+terminal_pattern() {
+  local out=() word
+  IFS=',' read -ra parts <<< "$1"
+  for word in "${parts[@]}"; do
+    word=$(printf '%s' "$word" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//; s/[][\.*^$+?(){}|\\]/\\&/g')
+    [[ -n $word ]] && out+=("$word")
+  done
+  local IFS='|'
+  printf '%s' "${out[*]:-}"
+}
+
+wants_terminal() { # <text> <words>
+  local pattern
+  pattern=$(terminal_pattern "$2")
+  [[ -n $pattern ]] || return 1
+  [[ ${1,,} =~ (^|[^[:alnum:]_])(${pattern,,})([^[:alnum:]_]|$) ]]
+}
+
+# The hook table, one entry per event, every command pointing at this script.
+hooks_json() {
+  jq -n --arg self "$self" --arg types "$NEEDS_INPUT_TYPES" '
+    def entry($cmd): { hooks: [{ type: "command", command: ($self + " hook " + $cmd) }] };
+    {
+      SessionStart: [entry("start")],
+      UserPromptSubmit: [entry("prompt")],
+      PreToolUse: [entry("tool")],
+      Notification: [entry("needs-input") + { matcher: $types }],
+      Stop: [entry("stop")],
+      SessionEnd: [entry("end")]
+    }'
+}
+
+write_hooks() {
+  jq -n --argjson hooks "$(hooks_json)" '{ hooks: $hooks }' > "$HOOKS_FILE.tmp" && mv -f "$HOOKS_FILE.tmp" "$HOOKS_FILE"
+}
+
+# True when ~/.claude/settings.json already routes hooks to this script; then
+# every session reports on its own and voice sessions must not double up.
+global_hooks_installed() {
+  [[ -f $SETTINGS ]] || return 1
+  jq -e --arg self "$self " '
+    [(.hooks // {})[]?[]?.hooks[]?.command // ""] | any(startswith($self))' "$SETTINGS" >/dev/null 2>&1
+}
+
+session_file() { printf '%s' "$SESSIONS/$1.json"; }
+
+# Hooks for one session run concurrently (parallel tool calls, and subagents
+# share the session id), so every read-modify-write takes a per-record lock
+# and stages through its own temp file. Without both, two hooks racing on a
+# shared ".tmp" path splice their output and corrupt the record for good.
+update_session() { # <shortId> <jq filter> [jq args...]
+  local short=$1 file lock rc; shift
+  file=$(session_file "$short")
+  lock=$SESSIONS/.$short.lock
+  (
+    flock 9 2>/dev/null || true
+    tmp=$(mktemp "$file.XXXXXX") || exit 1
+    if jq "$@" "$file" > "$tmp" 2>/dev/null && [[ -s $tmp ]]; then
+      mv -f "$tmp" "$file"
+    else
+      rm -f "$tmp"
+      exit 1
+    fi
+  ) 9>"$lock"
+  rc=$?
+  write_feed
+  return $rc
+}
+
+# One file the widget can watch instead of polling: every record, newest first.
+write_feed() {
+  (
+    flock 9 2>/dev/null || true
+    tmp=$(mktemp "$FEED_FILE.XXXXXX") || exit 1
+    if list_json > "$tmp" 2>/dev/null && [[ -s $tmp ]]; then
+      mv -f "$tmp" "$FEED_FILE"
+    else
+      rm -f "$tmp"
+    fi
+  ) 9>"$RT/.feed.lock"
+}
+
+now_ms() { date +%s%3N; }
+
+# Records that do not parse are skipped rather than failing the whole listing:
+# one damaged file must not freeze the widget's feed or blank the bar.
+list_json() {
+  local files=() f
+  while IFS= read -r f; do
+    jq -e . "$f" >/dev/null 2>&1 && files+=("$f")
+  done < <(find "$SESSIONS" -maxdepth 1 -name '*.json' -print 2>/dev/null | sort)
+  if (( ${#files[@]} > 0 )); then
+    jq -s 'sort_by(-.startedAt)' "${files[@]}"
+  else
+    echo '[]'
+  fi
+}
+
+latest_session() { list_json | jq -r '.[0].shortId // empty'; }
+
+# Drop day-old unpinned records and a recording marker voxtype no longer honours.
+prune() {
+  local file dropped=0
+  while read -r file; do
+    jq -e '.pinned == true' "$file" >/dev/null 2>&1 && continue
+    rm -f "$file"; dropped=1
+  done < <(find "$SESSIONS" -name '*.json' -mmin +1440 2>/dev/null)
+  (( dropped )) && write_feed
+  local vox_state="${XDG_RUNTIME_DIR:-/tmp}/voxtype/state"
+  if [[ -f $MARKER && -f $vox_state ]] && [[ $(<"$vox_state") == idle ]]; then rm -f "$MARKER"; fi
+}
+
+# ---- windows (terminal-started sessions live in one)
+
+clients_json() { hyprctl clients -j 2>/dev/null || echo '[]'; }
+active_window() { hyprctl activewindow -j 2>/dev/null | jq -r '.address // empty'; }
+window_exists() { [[ -n ${1:-} ]] && clients_json | jq -e --arg a "$1" 'any(.[]; .address == $a)' >/dev/null 2>&1; }
+focus_window() { hyprctl dispatch "hl.dsp.focus({ window = \"address:$1\" })" >/dev/null 2>&1; }
+
+# The terminal window this hook is running under: walk up from our parent
+# until a pid owns a Hyprland client. Prints {address, pid, class} or nothing.
+find_window() {
+  local pid=$PPID clients hit
+  clients=$(clients_json)
+  while [[ -n $pid && $pid -gt 1 ]]; do
+    hit=$(jq -c --argjson p "$pid" '[.[] | select(.pid == $p)] | first // empty | {address, pid, class}' <<< "$clients")
+    if [[ -n $hit ]]; then printf '%s' "$hit"; return 0; fi
+    pid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')
+  done
+  return 1
+}
+
+# The claude process this hook runs under, found by walking up from our
+# parent. Prints "<pid>\t<command line>", or nothing.
+claude_ancestor() {
+  local pid=$PPID args depth=0
+  while [[ -n $pid && $pid -gt 1 && $depth -lt 8 ]]; do
+    args=$(ps -o args= -p "$pid" 2>/dev/null)
+    if [[ $args =~ (^|/)claude($|[[:space:]]) ]]; then printf '%s\t%s' "$pid" "$args"; return 0; fi
+    pid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')
+    depth=$((depth + 1))
+  done
+  return 1
+}
+
+# Create a record for a session worth tracking: one Claude lists (interactive
+# → terminal, background → voice), or, since a fresh interactive session is
+# not listed until its first prompt, one whose hook runs under an interactive
+# claude process. `claude -p` one-shots are ignored. Returns 1 if nothing
+# was created.
+bootstrap_record() { # <sessionId> <cwd>
+  local sid=$1 cwd=$2 short=${1:0:8} entry kind window ancestor
+  entry=$(agent_entry "$short")
+  if [[ -n $entry ]]; then
+    kind=$(jq -r 'if .kind == "background" then "voice" else "terminal" end' <<< "$entry")
+    [[ -n $cwd ]] || cwd=$(jq -r '.cwd // ""' <<< "$entry")
+  else
+    # The hook's own claude process: it must be the session, so its working
+    # directory matches the hook's, and it is not a one-shot.
+    ancestor=$(claude_ancestor) || return 1
+    local apid=${ancestor%%$'\t'*} aargs=${ancestor#*$'\t'}
+    [[ $aargs =~ [[:space:]](-p|--print)([[:space:]]|$) ]] && return 1
+    [[ -n $cwd && $(readlink -f "/proc/$apid/cwd" 2>/dev/null) == "$(readlink -f "$cwd" 2>/dev/null)" ]] || return 1
+    kind=terminal
+  fi
+  window=$(find_window || echo null)
+  jq -n --arg short "$short" --arg uuid "$sid" --arg cwd "$cwd" --arg kind "$kind" --argjson window "$window" --argjson now "$(now_ms)" \
+    '{ shortId: $short, sessionId: $uuid, prompt: "", cwd: $cwd, startedAt: $now, updatedAt: $now, finishedAt: 0,
+       status: "ready", step: "", reply: "", results: [], pinned: false, kind: $kind, window: $window }' \
+    > "$(session_file "$short").tmp" && mv -f "$(session_file "$short").tmp" "$(session_file "$short")"
+  write_feed
+}
+
+# Read the hook payload on stdin; sets $short, $sid and $payload. A session
+# without a record gets one if Claude lists it, so hooks installed after a
+# session started still pick it up. Returns 1 when it is not one to track.
+read_hook() {
+  payload=$(cat)
+  sid=$(jq -r '.session_id // empty' <<< "$payload" 2>/dev/null) || return 1
+  [[ -n $sid ]] || return 1
+  short=${sid:0:8}
+  # An unreadable record counts as missing, so a damaged one is rebuilt
+  # instead of silently swallowing every later update.
+  jq -e . "$(session_file "$short")" >/dev/null 2>&1 && return 0
+  bootstrap_record "$sid" "$(jq -r '.cwd // ""' <<< "$payload")"
+}
+
+session_kind() { jq -r '.kind // "voice"' "$(session_file "$1")"; }
+session_window() { jq -r '.window.address // empty' "$(session_file "$1")"; }
+
+# For terminal sessions a toast only makes sense when the window is not in front.
+window_unfocused() { # <shortId>
+  local addr; addr=$(session_window "$1")
+  [[ -z $addr ]] || [[ $(active_window) != "$addr" ]]
+}
+
+attach_cmd() { # <shortId>  -> argv for the attach terminal
+  printf '%s\n' "--app-id=$APP_ID.$1" claude attach "$1"
+}
+
+# Launchers block until the window closes, so fork them off: a hook must return
+# promptly and the bar status must not wait on a terminal.
+launch() { setsid -f "$@" >/dev/null 2>&1 </dev/null; }
+
+open_attached() { # <shortId>
+  local argv; mapfile -t argv < <(attach_cmd "$1")
+  launch omarchy-launch-or-focus-tui "${argv[@]}"
+}
+
+# ---------------------------------------------------------------- commands
+
+cmd_start() {
+  prune
+  if [[ -f $MARKER ]]; then cmd_stop; return; fi
+  rm -f "$PROMPT_FILE"
+  if voxtype record start --file="$PROMPT_FILE" >/dev/null 2>"$RT/stderr"; then
+    touch "$MARKER"
+    set_status listening
+  else
+    set_status error
+    notify -u critical -t 5000 "voxtype is not recording" "$(head -1 "$RT/stderr" 2>/dev/null)"
+    return 1
+  fi
+}
+
+cmd_stop() {
+  rm -f "$MARKER"
+  set_status transcribing
+  local text rc
+  text=$(voxtype record stop --wait --timeout "$(setting waitSeconds)" 2>"$RT/stderr")
+  rc=$?
+  case $rc in
+    0) cmd_dispatch "$text" ;;
+    3) set_status idle; notify -u low -t 2500 "Nothing heard" ;;
+    *) set_status error; notify -u critical -t 5000 "Transcription failed" "$(head -1 "$RT/stderr" 2>/dev/null)"; return 1 ;;
+  esac
+}
+
+cmd_dispatch() {
+  local text=$1 cwd mode
+  [[ -n ${text//[[:space:]]/} ]] || { set_status idle; return; }
+  cwd=$(setting cwd); cwd=${cwd/#\~/$HOME}
+  mode=$(setting permissionMode)
+
+  if wants_terminal "$text" "$(setting terminalWords)"; then
+    (cd "$cwd" && launch omarchy-launch-tui --app-id=$APP_ID claude --permission-mode "$mode" -- "$text")
+    set_status idle
+    return
+  fi
+
+  local -a settings_args=()
+  if ! global_hooks_installed; then
+    write_hooks
+    settings_args=(--settings "$HOOKS_FILE")
+  fi
+  local out short uuid
+  out=$(cd "$cwd" && claude --bg --name "voice: $(excerpt "$text" 40)" "${settings_args[@]}" \
+        --permission-mode "$mode" --append-system-prompt "$VOICE_PROMPT" -- "$text" 2>&1 </dev/null)
+  short=$(grep -oiE 'backgrounded[^0-9a-f]*[0-9a-f]{6,}' <<< "$out" | grep -oE '[0-9a-f]{6,}$' | head -1)
+  if [[ -z $short ]]; then
+    set_status error
+    notify -u critical -t 6000 "Claude did not start" "$(head -1 <<< "$out")"
+    return 1
+  fi
+  uuid=$(claude agents --json 2>/dev/null | jq -r --arg id "$short" '.[] | select(.id == $id) | .sessionId // empty' | head -1)
+  jq -n --arg short "$short" --arg uuid "$uuid" --arg prompt "$text" --arg cwd "$cwd" --argjson now "$(now_ms)" \
+    '{ shortId: $short, sessionId: $uuid, prompt: $prompt, cwd: $cwd, startedAt: $now, updatedAt: $now,
+       finishedAt: 0, status: "thinking", step: "", reply: "", results: [], pinned: false, kind: "voice", window: null }' \
+    > "$(session_file "$short").tmp" && mv -f "$(session_file "$short").tmp" "$(session_file "$short")"
+  write_feed
+  set_status thinking
+  notify -u low -t 3000 -g "$ROBOT" "Working on it" "$(excerpt "$text" 120)"
+}
+
+cmd_hook_needs_input() {
+  local payload short sid addr
+  read_hook || return 0
+  update_session "$short" '.status = "needs-input"'
+  recompute_status
+  if [[ $(session_kind "$short") == terminal ]]; then
+    # It already has a window: bring it forward if you are elsewhere.
+    window_unfocused "$short" || return 0
+    addr=$(session_window "$short")
+    window_exists "$addr" && focus_window "$addr"
+    notify -u normal -t 4000 -g "$ROBOT" "Claude needs you" "$(jq -r '.prompt' "$(session_file "$short")" | head -c 120)" \
+      --exec "$self" attach "$short"
+    return 0
+  fi
+  open_attached "$short"
+  notify -u normal -t 4000 -g "$ROBOT" "Claude needs you" "$(jq -r '.prompt' "$(session_file "$short")" | head -c 120)"
+}
+
+# URLs and existing file paths mentioned in the reply, as {kind, value} records
+# (urls first, at most three). Relative paths and bare filenames resolve
+# against the session cwd and must exist, which keeps "and/or" out.
+find_results() { # <reply> <cwd>
+  local reply=$1 cwd=$2 url token path
+  local -a out=()
+  while read -r url; do
+    url=${url%%[.,;:\)\]]}
+    [[ -n $url ]] && out+=("url	$url")
+  done < <(grep -oE 'https?://[^[:space:]<>"'"'"')]+' <<< "$reply" | awk '!seen[$0]++' | head -3)
+  local stripped; stripped=$(sed -E 's#https?://[^[:space:]<>"'"'"')]+# #g' <<< "$reply")
+  while read -r token; do
+    token=${token%%[.,;:\)\]]}
+    path=$token
+    [[ $path == "~"* ]] && path=$HOME${path#\~}
+    [[ $path != /* ]] && path=$cwd/$path
+    [[ -e $path ]] || continue
+    out+=("path	$path")
+  done < <(grep -oE '(~|/)?[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)+|[A-Za-z0-9_-]+\.[A-Za-z0-9]{1,6}' <<< "$stripped" | awk '!seen[$0]++')
+  # jq builds the JSON: a backslash or quote in a URL would make hand-rolled
+  # JSON unparseable, and that took the whole Stop update down with it.
+  printf '%s\n' "${out[@]:0:3}" | jq -R -s '
+    split("\n")
+    | map(select(length > 0) | split("\t") | select(length == 2) | { kind: .[0], value: .[1] })
+    | reduce .[] as $r ([]; if any(.[]; .value == $r.value) then . else . + [$r] end)'
+}
+
+cmd_hook_stop() {
+  local payload short sid message reply results cwd argv first_kind first_value
+  read_hook || return 0
+  message=$(jq -r '.last_assistant_message // ""' <<< "$payload")
+  reply=$(excerpt "$(plain_text "$message")" 2000)
+  cwd=$(jq -r '.cwd // ""' "$(session_file "$short")")
+  results=$(find_results "$message" "$cwd")
+  jq -e . >/dev/null 2>&1 <<< "$results" || results='[]'
+  local final=done
+  has_background_tasks "$short" && final=waiting
+  update_session "$short" --arg status "$final" --arg reply "$reply" --argjson results "$results" --argjson now "$(now_ms)" \
+    '.status = $status | .reply = $reply | .results = $results | .finishedAt = $now | .updatedAt = $now'
+  recompute_status
+  [[ $final == done ]] || return 0
+  if [[ $(session_kind "$short") == terminal ]]; then
+    window_unfocused "$short" || return 0
+    notify -u normal -t 15000 -g "$ROBOT" "Claude" "$(excerpt "$reply" 200)" --exec "$self" attach "$short"
+    return 0
+  fi
+  first_kind=$(jq -r '.[0].kind // empty' <<< "$results")
+  first_value=$(jq -r '.[0].value // empty' <<< "$results")
+  if [[ -n $first_kind ]]; then
+    notify -u normal -t 15000 -g "$ROBOT" "Claude" "$(excerpt "$reply" 200)" --exec xdg-open "$first_value"
+  else
+    mapfile -t argv < <(attach_cmd "$short")
+    notify -u normal -t 15000 -g "$ROBOT" "Claude" "$(excerpt "$reply" 200)" --exec omarchy-launch-tui "${argv[@]}"
+  fi
+}
+
+# PreToolUse: turn the tool call into a one-line progress note for the row.
+cmd_hook_tool() {
+  local payload short sid step
+  read_hook || return 0
+  step=$(jq -r '
+    def base: tostring | split("/") | last;
+    (.tool_name // "") as $t | (.tool_input // {}) as $i |
+    if $t == "Bash" then "Running: " + (($i.description // "") | if . == "" then ($i.command // "") else . end)
+    elif $t == "Edit" or $t == "MultiEdit" then "Editing " + (($i.file_path // "") | base)
+    elif $t == "Write" then "Writing " + (($i.file_path // "") | base)
+    elif $t == "Read" then "Reading " + (($i.file_path // "") | base)
+    elif $t == "Grep" or $t == "Glob" then "Searching for " + ($i.pattern // "")
+    elif $t == "WebFetch" then "Fetching " + (($i.url // "") | sub("^[a-z]+://"; "") | split("/")[0])
+    elif $t == "WebSearch" then "Searching the web"
+    elif $t == "Agent" or $t == "Task" then "Delegating: " + ($i.description // "")
+    elif $t == "AskUserQuestion" then "Asking you a question"
+    else "Using " + $t end' <<< "$payload" 2>/dev/null)
+  # A Stop fires at the end of every turn, but a background task or a typed
+  # follow-up starts a new one: any tool call on a finished session means it
+  # is working again.
+  update_session "$short" --arg step "$(excerpt "$step" 80)" --argjson now "$(now_ms)" \
+    '.step = $step | .updatedAt = $now
+     | if .status == "done" or .status == "stopped" or .status == "waiting" or .status == "ready" then .status = "thinking" else . end'
+  recompute_status
+}
+
+# UserPromptSubmit: the user (or a background-task notification) started a
+# new turn, so the session is busy again with no step yet.
+cmd_hook_prompt() {
+  local payload short sid title
+  read_hook || return 0
+  title=$(excerpt "$(jq -r '.prompt // ""' <<< "$payload")" 200)
+  # Task notifications and other injected turns arrive as "<...>" prompts;
+  # they are not what the user asked for.
+  [[ $title == "<"* ]] && title=""
+  update_session "$short" --arg title "$title" --argjson now "$(now_ms)" \
+    '.step = "" | .updatedAt = $now
+     | if .prompt == "" and $title != "" then .prompt = $title else . end
+     | if .status == "done" or .status == "stopped" or .status == "waiting" or .status == "ready" then .status = "thinking" else . end'
+  recompute_status
+}
+
+# SessionStart: make sure the session has a record and knows its window.
+cmd_hook_start() {
+  local payload short sid window
+  read_hook || return 0
+  window=$(find_window || echo null)
+  update_session "$short" --argjson window "$window" --arg cwd "$(jq -r '.cwd // ""' <<< "$payload")" \
+    'if $window != null then .window = $window else . end | if $cwd != "" then .cwd = $cwd else . end'
+}
+
+# ---- hooks in ~/.claude/settings.json
+
+cmd_hooks() {
+  local backup=$SETTINGS.bak-voxclaude current
+  case ${1:-status} in
+    install)
+      mkdir -p "$(dirname "$SETTINGS")"
+      [[ -f $SETTINGS ]] || echo '{}' > "$SETTINGS"
+      [[ -f $backup ]] || cp "$SETTINGS" "$backup"
+      if jq --argjson ours "$(hooks_json)" --arg self "$self " '
+        .hooks = ((.hooks // {}) as $h
+          | reduce ($ours | to_entries[]) as $e ($h;
+              .[$e.key] = ([(.[$e.key] // [])[] | select(any(.hooks[]?.command // ""; startswith($self)) | not)] + $e.value)))' \
+        "$SETTINGS" > "$SETTINGS.tmp" 2>/dev/null && mv -f "$SETTINGS.tmp" "$SETTINGS"; then
+        echo "voxclaude hooks installed in $SETTINGS (every Claude Code session now reports to the widget)"
+      else
+        rm -f "$SETTINGS.tmp"
+        echo "voxclaude: could not update $SETTINGS - is it valid JSON?" >&2
+        return 1
+      fi
+      ;;
+    uninstall)
+      [[ -f $SETTINGS ]] || return 0
+      if jq --arg self "$self " '
+        .hooks = ((.hooks // {}) | with_entries(
+            .value = [.value[] | select(any(.hooks[]?.command // ""; startswith($self)) | not)])
+          | with_entries(select(.value | length > 0)))
+        | if .hooks == {} then del(.hooks) else . end' \
+        "$SETTINGS" > "$SETTINGS.tmp" 2>/dev/null && mv -f "$SETTINGS.tmp" "$SETTINGS"; then
+        echo "voxclaude hooks removed from $SETTINGS"
+      else
+        rm -f "$SETTINGS.tmp"
+        echo "voxclaude: could not update $SETTINGS - is it valid JSON?" >&2
+        return 1
+      fi
+      ;;
+    status)
+      if global_hooks_installed; then echo "installed ($SETTINGS)"; else echo "not installed"; fi
+      ;;
+    *) echo "voxclaude hooks: install|uninstall|status" >&2; return 1 ;;
+  esac
+}
+
+# A session that ends without a Stop (claude stop, closed terminal, crash) must
+# not keep the bar on needs-input; a finished one keeps its reply.
+cmd_hook_end() {
+  local payload short sid
+  read_hook || return 0
+  update_session "$short" 'if .status == "done" then . else .status = "stopped" end'
+  recompute_status
+}
+
+cmd_open() { [[ -n ${1:-} ]] && launch xdg-open "$1"; }
+
+cmd_forget() {
+  local short=${1:-}
+  [[ -n $short && -f $(session_file "$short") ]] || return 0
+  rm -f "$(session_file "$short")"
+  claude rm "$short" >/dev/null 2>&1 </dev/null
+  write_feed
+  recompute_status
+}
+
+cmd_pin() {
+  local short=${1:-}
+  [[ -n $short && -f $(session_file "$short") ]] || return 0
+  update_session "$short" '.pinned = ((.pinned // false) | not)'
+}
+
+cmd_attach() {
+  local short=${1:-latest} addr uuid cwd
+  [[ $short == latest ]] && short=$(latest_session)
+  [[ -n $short && -f $(session_file "$short") ]] || { echo "voxclaude: no such session" >&2; return 1; }
+  if [[ $(session_kind "$short") == terminal ]]; then
+    addr=$(session_window "$short")
+    if window_exists "$addr"; then focus_window "$addr"; return 0; fi
+    # Window gone: resume the conversation in a fresh floating terminal.
+    uuid=$(jq -r '.sessionId' "$(session_file "$short")")
+    cwd=$(jq -r '.cwd // ""' "$(session_file "$short")"); [[ -d $cwd ]] || cwd=$HOME
+    (cd "$cwd" && launch omarchy-launch-tui "--app-id=$APP_ID.$short" claude --resume "$uuid")
+    return 0
+  fi
+  open_attached "$short"
+}
+
+cmd_status() {
+  local word; word=$(cat "$STATUS_FILE" 2>/dev/null); word=${word//[[:space:]]/}
+  printf '%s\n' "${word:-idle}"
+}
+
+case ${1:-} in
+  start) cmd_start ;;
+  stop) cmd_stop ;;
+  dispatch) cmd_dispatch "${2:-}" ;;
+  hook)
+    case ${2:-} in
+      needs-input) cmd_hook_needs_input ;;
+      stop) cmd_hook_stop ;;
+      end) cmd_hook_end ;;
+      tool) cmd_hook_tool ;;
+      prompt) cmd_hook_prompt ;;
+      start) cmd_hook_start ;;
+      *) echo "voxclaude hook: start|needs-input|stop|end|tool|prompt" >&2; exit 1 ;;
+    esac ;;
+  attach) cmd_attach "${2:-latest}" ;;
+  open) cmd_open "${2:-}" ;;
+  forget) cmd_forget "${2:-}" ;;
+  pin) cmd_pin "${2:-}" ;;
+  hooks) cmd_hooks "${2:-status}" ;;
+  list) list_json ;;
+  status) cmd_status ;;
+  *) sed -n '2,18p' "$self" | sed 's/^# \{0,1\}//'; exit 1 ;;
+esac

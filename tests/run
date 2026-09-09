@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# Run every check: manifest, node unit tests, bash script tests, headless QML, lint.
+set -euo pipefail
+dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+cd "$dir"
+
+bash tests/manifest.test.sh
+node --test tests/model.test.js
+bash tests/voxclaude.test.sh
+
+runner=/usr/lib/qt6/bin/qmltestrunner
+if [[ -x $runner ]]; then
+  QT_QUICK_BACKEND=software QT_LOGGING_RULES="qt.qml.*=false" "$runner" -platform offscreen -input tests/qml -silent
+else
+  echo "qmltestrunner not found, QML tests skipped"
+fi
+
+lint=/usr/lib/qt6/bin/qmllint
+if [[ -x $lint ]]; then
+  # Panel.qml imports Quickshell and the shell's own modules; only hard errors matter here.
+  if "$lint" -I /usr/share/omarchy/shell Panel.qml 2>&1 | grep -qi "error"; then
+    "$lint" -I /usr/share/omarchy/shell Panel.qml 2>&1 | grep -i "error" >&2
+    exit 1
+  fi
+fi
+
+echo "all checks passed"
