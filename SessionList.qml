@@ -40,7 +40,12 @@ Column {
 
   readonly property string pinGlyph: String.fromCodePoint(0xF0403)     // nf-md-pin
 
-  readonly property var rows: Model.sortSessions(Model.visibleSessions(sessions)).slice(0, maxRows)
+  readonly property var sortedRows: Model.sortSessions(Model.visibleSessions(sessions))
+  // The order the rows had when the list was last activated. Pinning,
+  // unpinning or finishing re-sorts the feed, but the rows stay put until
+  // the popover is next opened, so nothing jumps under the pointer.
+  property var frozenIds: []
+  readonly property var rows: (active ? Model.stableOrder(frozenIds, sortedRows) : sortedRows).slice(0, maxRows)
   readonly property int count: rows.length
   readonly property bool emptyVisible: count === 0
 
@@ -54,6 +59,7 @@ Column {
   }
 
   onRowsChanged: if (cursor >= count) cursor = count - 1
+  onActiveChanged: if (active) frozenIds = Model.sessionIds(sortedRows)
 
   spacing: 4
 

@@ -153,6 +153,36 @@ function sortSessions(list) {
   return out
 }
 
+// Re-sorting the list under the pointer is jarring: pinning a row would
+// send it to the top mid-click. While the popover is open the rows keep the
+// order they had when it opened (`ids`); rows that have since disappeared
+// drop out, and rows not yet seen go first, in sorted order, which is where
+// the next open would put them anyway. `sorted` is already sorted.
+function stableOrder(ids, sorted) {
+  var items = toList(sorted) || []
+  var seen = toList(ids) || []
+  var byId = {}
+  for (var i = 0; i < items.length; i++) byId[String(items[i] && items[i].shortId || "")] = items[i]
+  var out = []
+  var placed = {}
+  for (var n = 0; n < items.length; n++) {
+    var id = String(items[n] && items[n].shortId || "")
+    if (seen.indexOf(id) < 0 && !placed[id]) { out.push(items[n]); placed[id] = true }
+  }
+  for (var k = 0; k < seen.length; k++) {
+    var known = String(seen[k])
+    if (byId[known] !== undefined && !placed[known]) { out.push(byId[known]); placed[known] = true }
+  }
+  return out
+}
+
+function sessionIds(list) {
+  var items = toList(list) || []
+  var out = []
+  for (var i = 0; i < items.length; i++) out.push(String(items[i] && items[i].shortId || ""))
+  return out
+}
+
 function relativeTime(thenMs, nowMs) {
   var then = Number(thenMs)
   if (!(then > 0)) return ""
@@ -646,7 +676,7 @@ if (typeof module !== "undefined" && module.exports) {
   module.exports = {
     STATUSES: STATUSES, toList: toList, terminalPattern: terminalPattern, wantsTerminal: wantsTerminal,
     parseBgOutput: parseBgOutput, glyphFor: glyphFor, statusLabel: statusLabel, emptyHint: emptyHint, statusTone: statusTone, kindGlyph: kindGlyph, plainText: plainText, escapeHtml: escapeHtml, excerpt: excerpt,
-    sortSessions: sortSessions, visibleSessions: visibleSessions, relativeTime: relativeTime, overallStatus: overallStatus, latestFinish: latestFinish,
+    sortSessions: sortSessions, visibleSessions: visibleSessions, stableOrder: stableOrder, sessionIds: sessionIds, relativeTime: relativeTime, overallStatus: overallStatus, latestFinish: latestFinish,
     SPRITE_FRAMES: SPRITE_FRAMES, LAPTOP_FRAMES: LAPTOP_FRAMES, LAPTOP_INTRO: LAPTOP_INTRO, LAPTOP_TYPING: LAPTOP_TYPING,
     isLit: isLit, spritePixels: spritePixels, litCount: litCount,
     spriteFrame: spriteFrame, spriteInterval: spriteInterval,

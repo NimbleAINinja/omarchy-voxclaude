@@ -94,6 +94,23 @@ test("sortSessions puts needs-input first, then newest first", () => {
   assert.deepEqual(Model.sortSessions("junk"), [])
 })
 
+test("stableOrder keeps known rows where they were and puts new ones first", () => {
+  const a = { shortId: "a", pinned: true }, b = { shortId: "b" }, c = { shortId: "c" }, n = { shortId: "n" }
+  // Sorted would put the newly pinned "a" first; the frozen order says b, a, c.
+  assert.deepEqual(Model.stableOrder(["b", "a", "c"], [a, b, c]).map(s => s.shortId), ["b", "a", "c"])
+  // A row that has gone (forgotten) simply drops out.
+  assert.deepEqual(Model.stableOrder(["b", "a", "c"], [a, c]).map(s => s.shortId), ["a", "c"])
+  // A row not in the frozen order goes first, in sorted order.
+  assert.deepEqual(Model.stableOrder(["b", "a"], [n, a, b]).map(s => s.shortId), ["n", "b", "a"])
+  assert.deepEqual(Model.stableOrder(["a"], [b, n, a]).map(s => s.shortId), ["b", "n", "a"])
+  // Nothing frozen: sorted order as is.
+  assert.deepEqual(Model.stableOrder([], [a, b]).map(s => s.shortId), ["a", "b"])
+  assert.deepEqual(Model.stableOrder(null, [a, b]).map(s => s.shortId), ["a", "b"])
+  assert.deepEqual(Model.stableOrder(["a"], null), [])
+  assert.deepEqual(Model.sessionIds([a, b, { }]), ["a", "b", ""])
+  assert.deepEqual(Model.sessionIds(null), [])
+})
+
 test("sortSessions accepts array-like lists from Qt", () => {
   const qtList = { length: 2, 0: { shortId: "x", status: "done", startedAt: 1 }, 1: { shortId: "y", status: "done", startedAt: 2 } }
   assert.deepEqual(Model.sortSessions(qtList).map(s => s.shortId), ["y", "x"])

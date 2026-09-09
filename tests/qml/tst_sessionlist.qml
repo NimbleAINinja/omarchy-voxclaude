@@ -250,6 +250,48 @@ TestCase {
     compare(row.promptText, "<b>drop</b> the <table> tag")
   }
 
+  function test_rows_stay_put_when_pinned_until_the_list_is_reactivated() {
+    var list = makeList({ sessions: [
+      { shortId: "new1", status: "done", startedAt: 3, prompt: "newest" },
+      { shortId: "mid2", status: "done", startedAt: 2, prompt: "middle" },
+      { shortId: "old3", status: "done", startedAt: 1, prompt: "oldest" }
+    ], active: false })
+    list.active = true
+    compare(list.rows.map(function(s) { return s.shortId }), ["new1", "mid2", "old3"])
+    // The feed comes back with the oldest row pinned: sorted, it would be first.
+    list.sessions = [
+      { shortId: "new1", status: "done", startedAt: 3, prompt: "newest" },
+      { shortId: "mid2", status: "done", startedAt: 2, prompt: "middle" },
+      { shortId: "old3", status: "done", startedAt: 1, prompt: "oldest", pinned: true }
+    ]
+    compare(list.rows.map(function(s) { return s.shortId }), ["new1", "mid2", "old3"])
+    verify(list.rowAt(2).pinned)
+    // Unpinning again: still no movement.
+    list.sessions = [
+      { shortId: "new1", status: "done", startedAt: 3, prompt: "newest" },
+      { shortId: "mid2", status: "done", startedAt: 2, prompt: "middle", pinned: true },
+      { shortId: "old3", status: "done", startedAt: 1, prompt: "oldest" }
+    ]
+    compare(list.rows.map(function(s) { return s.shortId }), ["new1", "mid2", "old3"])
+    // Closing and reopening the popover shows the sorted order.
+    list.active = false
+    list.active = true
+    compare(list.rows.map(function(s) { return s.shortId }), ["mid2", "new1", "old3"])
+  }
+
+  function test_new_rows_go_on_top_while_open_and_forgotten_rows_drop_out() {
+    var list = makeList({ sessions: [
+      { shortId: "b", status: "done", startedAt: 2, prompt: "b" },
+      { shortId: "a", status: "done", startedAt: 1, prompt: "a" }
+    ], active: false })
+    list.active = true
+    list.sessions = [
+      { shortId: "c", status: "thinking", startedAt: 3, prompt: "c" },
+      { shortId: "b", status: "done", startedAt: 2, prompt: "b" }
+    ]
+    compare(list.rows.map(function(s) { return s.shortId }), ["c", "b"])
+  }
+
   function test_rows_are_not_built_while_the_list_is_inactive() {
     // The popover's content tree stays mounted while it is closed, and the
     // feed is rewritten on every hook of every tracked session. Rebuilding
