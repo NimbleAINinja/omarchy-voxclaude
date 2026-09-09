@@ -30,7 +30,7 @@ PLUGIN_ID=io.github.nimbleaininja.voxclaude
 APP_ID=org.omarchy.voxclaude
 NEEDS_INPUT_TYPES="permission_prompt|agent_needs_input|elicitation_dialog|elicitation_url_dialog"
 ROBOT=$'\xf3\xb1\x9a\xa3' # nf-md-robot, same glyph as the Agents widget
-VOICE_PROMPT="You were launched by voice from a desktop widget (VoxClaude). The user cannot see this terminal unless they choose to open it, so work autonomously and keep replies short. End your final message with one line saying where the result is (a file path or URL) whenever there is one, and name any command they must run to see it."
+VOICE_PROMPT="You were launched by voice from a desktop widget (VoxClaude). The user cannot see this terminal unless they choose to open it, so work autonomously and keep replies short. When there is a result to look at, end your final message with one line saying where it is (a file path or URL) and name any command they must run to see it. When there is not, just answer: never say that there is no file or URL."
 
 self=$(realpath "${BASH_SOURCE[0]}")
 plugin_dir=${self%/*/*}
@@ -135,6 +135,27 @@ plain_text() {
     -e 's/^[[:space:]]*([-*+]|[0-9]+\.)[[:space:]]+//' \
     -e 's/(\*\*|__)([^*_][^*_]*)\1/\2/g' \
     -e 's/(^|[[:space:](])[*_]([^*_[:space:]][^*_]*)[*_]([[:space:]).,;:!?]|$)/\1\2\3/g'
+}
+
+# A voice session is asked to say where its result is, so models tend to report
+# the absence of one too ("No file or URL for this one."), which is noise in a
+# toast. Drop that as a trailing sentence, never mid-reply, and only when
+# something is left to show.
+NO_RESULT_TAIL='^(there[[:space:]]*(is|.s|are)[[:space:]]+)?no[[:space:]]+([a-z]+[[:space:]]+)?(file|url|link|path|output|result)s?([[:space:]]*(or|and|,)[[:space:]]*(an?[[:space:]]+)?(file|url|link|path|output|result)s?)*([[:space:]][^.!?]*)?[.!?]?[[:space:]]*$'
+
+drop_no_result() { # <text>
+  local text=$1 head tail prefix rest out=""
+  # The last sentence, if the reply has more than one and it is a short one.
+  [[ $text =~ ^(.*[.!?][[:space:]]+)([^.!?]{0,70}[.!?]?)[[:space:]]*$ ]] || { printf '%s' "$text"; return; }
+  head=${BASH_REMATCH[1]}; tail=${BASH_REMATCH[2]}
+  # An emoji or bracket glued to its front belongs to the sentence before it.
+  prefix=""; rest=$tail
+  [[ $tail =~ ^([^[:alnum:]]+)(.*)$ ]] && { prefix=${BASH_REMATCH[1]}; rest=${BASH_REMATCH[2]}; }
+  shopt -s nocasematch
+  [[ $rest =~ $NO_RESULT_TAIL ]] && out=$head$prefix
+  shopt -u nocasematch
+  [[ $out =~ ^(.*[^[:space:]])[[:space:]]*$ ]] && out=${BASH_REMATCH[1]}
+  printf '%s' "${out:-$text}"
 }
 
 # Collapse whitespace and cut to N characters with an ellipsis. Mirrors Model.excerpt.
@@ -571,7 +592,7 @@ cmd_hook_stop() {
   local payload short sid hook_cwd message reply results cwd argv first_kind first_value
   read_hook || return 0
   message=$(jq -r '.last_assistant_message // ""' <<< "$payload")
-  reply=$(excerpt "$(plain_text "$message")" 2000)
+  reply=$(excerpt "$(drop_no_result "$(plain_text "$message")")" 2000)
   cwd=$(jq -r '.cwd // ""' "$(session_file "$short")")
   results=$(find_results "$message" "$cwd")
   jq -e . >/dev/null 2>&1 <<< "$results" || results='[]'

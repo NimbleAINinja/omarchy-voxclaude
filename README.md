@@ -35,7 +35,10 @@ Built for the [Omarchy](https://omarchy.org) shell on top of
   the reply toast opens the result if there is one, otherwise the conversation.
 - **A hint to Claude**: voice sessions get a short appended system prompt saying
   they were started from a widget the user cannot see, so replies stay short
-  and end with where the result is. That line is what feeds the chips.
+  and end with where the result is when there is one. That line is what feeds
+  the chips. When there is nothing to point at the reply says nothing about
+  it, and a model that reports the absence anyway ("No file or URL for this
+  one.") has that sentence dropped before it reaches a toast or a row.
 
 ## Requirements
 

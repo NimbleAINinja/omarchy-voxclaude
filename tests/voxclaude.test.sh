@@ -361,6 +361,34 @@ printf '%s' '{"session_id":"abcd1234-0000-4000-8000-000000000000","hook_event_na
 check "a reply with a backslash url still completes the session" bash -c "jq -e '.status == \"done\" and (.reply | length) > 0' '$RT/sessions/abcd1234.json' >/dev/null"
 check "results stay valid json for an awkward reply" bash -c "jq -e '.results | type == \"array\"' '$RT/sessions/abcd1234.json' >/dev/null"
 
+# ---- replies with nothing to point at ---------------------------------------------
+# Voice sessions are asked to end with where the result is, and models answer
+# that instruction even when there is nothing: "No file or URL for this one."
+# is noise in a toast, so it is dropped whenever something is left to show.
+reply_after() { # <last_assistant_message>
+  reset >/dev/null
+  VOXTYPE_TEXT="tell me a joke" "$script" stop >/dev/null 2>&1
+  jq -n --arg m "$1" '{ session_id: "abcd1234-0000-4000-8000-000000000000",
+                        hook_event_name: "Stop", last_assistant_message: $m }' \
+    | "$script" hook stop
+  jq -r '.reply' "$RT/sessions/abcd1234.json"
+}
+
+check "a trailing no-file-or-URL note is dropped" \
+  test "$(reply_after 'Why did the cat sit on the computer? To keep an eye on the mouse. 🐱 No file or URL for this one.')" \
+     = 'Why did the cat sit on the computer? To keep an eye on the mouse. 🐱'
+check "the same note in its own sentence is dropped" \
+  test "$(reply_after 'Signal is running now. There is no file or URL to open.')" = 'Signal is running now.'
+check "the toast never carries the note" \
+  bash -c "sleep 0.3; ! grep '^omarchy-notification-send' '\$LOG' | grep -qi 'no file or url'" 
+check "a real result line is kept" \
+  test "$(reply_after 'Wrote the notes to ~/Work/notes.md.')" = 'Wrote the notes to ~/Work/notes.md.'
+check "a sentence that only starts with no is kept" \
+  test "$(reply_after 'No file was found in the URL list, so I created config.yaml at ~/Work/config.yaml.')" \
+     = 'No file was found in the URL list, so I created config.yaml at ~/Work/config.yaml.'
+check "a reply that is nothing but the note still says something" \
+  test "$(reply_after 'No file or URL for this one.')" = 'No file or URL for this one.'
+
 # ---- recording states are not clobbered -------------------------------------------
 reset; VOXTYPE_TEXT="do a thing" "$script" stop
 "$script" start
