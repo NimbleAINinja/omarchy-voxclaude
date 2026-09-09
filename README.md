@@ -104,8 +104,9 @@ you start in a terminal too:
 
 That merges the same hooks into `~/.claude/settings.json` (a backup is kept
 beside it; `hooks uninstall` removes only VoxClaude's entries, `hooks status`
-says which). From then on every new Claude Code session gets a row: the first
-prompt you type is the title, the row shows the same progress line, and the
+says which). From then on every new Claude Code session gets a row once you
+type something: the first prompt is the title, a session that never gets one
+is not listed (unless it needs you, which is worth showing untitled), the row shows the same progress line, and the
 status follows the session. Claude reloads its settings live, so sessions
 already running pick the hooks up too; their row appears at their next tool
 call, with the title filled in by the next prompt you type. `claude -p`

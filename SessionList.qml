@@ -40,7 +40,7 @@ Column {
 
   readonly property string pinGlyph: String.fromCodePoint(0xF0403)     // nf-md-pin
 
-  readonly property var rows: Model.sortSessions(sessions).slice(0, maxRows)
+  readonly property var rows: Model.sortSessions(Model.visibleSessions(sessions)).slice(0, maxRows)
   readonly property int count: rows.length
   readonly property bool emptyVisible: count === 0
 

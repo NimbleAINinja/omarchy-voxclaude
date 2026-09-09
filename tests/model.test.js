@@ -204,6 +204,18 @@ test("rowStep is the live step, and only while the session is running", () => {
   assert.equal(Model.rowStep(null), "")
 })
 
+test("visibleSessions drops rows with no prompt, unless they need you", () => {
+  const rows = [
+    { shortId: "blank", status: "stopped", prompt: "", startedAt: 4 },
+    { shortId: "titled", status: "done", prompt: "did a thing", startedAt: 3 },
+    { shortId: "asking", status: "needs-input", prompt: "", startedAt: 2 },
+    { shortId: "spaces", status: "ready", prompt: "   ", startedAt: 1 }
+  ]
+  assert.deepEqual(Model.visibleSessions(rows).map(r => r.shortId), ["titled", "asking"])
+  assert.deepEqual(Model.visibleSessions([]), [])
+  assert.deepEqual(Model.visibleSessions(null), [])
+})
+
 test("resultLabel shortens urls and paths for chips", () => {
   assert.equal(Model.resultLabel({ kind: "url", value: "http://localhost:5173/" }), "localhost:5173")
   assert.equal(Model.resultLabel({ kind: "url", value: "https://example.com/some/long/path?x=1" }), "example.com/some/long/path")

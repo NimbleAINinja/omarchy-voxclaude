@@ -121,6 +121,21 @@ function excerpt(text, max) {
   return clean.slice(0, Math.max(0, max - 1)) + "…"
 }
 
+// A terminal session gets its record at SessionStart and its title at the
+// first prompt, so a row with no prompt has nothing to say yet. One that
+// needs you is listed regardless: saying so is what the widget is for, and an
+// injected turn can reach that state without ever setting a title.
+function visibleSessions(list) {
+  var items = toList(list)
+  if (!items) return []
+  var out = []
+  for (var i = 0; i < items.length; i++) {
+    var s = items[i] || {}
+    if (String(s.prompt || "").trim() !== "" || s.status === "needs-input") out.push(items[i])
+  }
+  return out
+}
+
 function sortSessions(list) {
   var items = toList(list)
   if (!items) return []
@@ -304,7 +319,7 @@ if (typeof module !== "undefined" && module.exports) {
   module.exports = {
     STATUSES: STATUSES, toList: toList, terminalPattern: terminalPattern, wantsTerminal: wantsTerminal,
     parseBgOutput: parseBgOutput, glyphFor: glyphFor, statusLabel: statusLabel, emptyHint: emptyHint, statusTone: statusTone, kindGlyph: kindGlyph, plainText: plainText, escapeHtml: escapeHtml, excerpt: excerpt,
-    sortSessions: sortSessions, relativeTime: relativeTime, overallStatus: overallStatus,
+    sortSessions: sortSessions, visibleSessions: visibleSessions, relativeTime: relativeTime, overallStatus: overallStatus,
     SPRITE_FRAMES: SPRITE_FRAMES, spritePixels: spritePixels, litCount: litCount,
     spriteFrame: spriteFrame, spriteInterval: spriteInterval,
     elapsed: elapsed, isRunning: isRunning, rowSubtitle: rowSubtitle, rowStep: rowStep, resultLabel: resultLabel

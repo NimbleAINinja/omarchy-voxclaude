@@ -126,6 +126,17 @@ TestCase {
     verify(!finished.stepVisible)
   }
 
+  // A terminal session gets its record at SessionStart and its title at the
+  // first prompt; until then there is nothing to show, so it is not listed.
+  function test_rows_without_a_prompt_are_not_listed() {
+    var list = makeList({ sessions: [
+      { shortId: "blank1", status: "stopped", startedAt: 1000000000 - 60000, prompt: "" },
+      { shortId: "real1", status: "done", startedAt: 1000000000 - 120000, prompt: "did a thing" }
+    ] })
+    compare(list.count, 1)
+    compare(list.rowAt(0).shortId, "real1")
+  }
+
   function test_cursor_follows_keyboard() {
     var list = makeList({ sessions: sessions() })
     compare(list.cursor, -1)
