@@ -74,7 +74,7 @@ TestCase {
         reply: "Built it.   Open http://localhost:5173/ to see it.",
         results: [{ kind: "url", value: "http://localhost:5173/" }, { kind: "path", value: "/home/x/Work/plants/index.html" }] }
     ] })
-    compare(list.rowAt(0).subtitleText, "Claude is working · 4m · Editing App.jsx")
+    compare(list.rowAt(0).subtitleText, "Claude is working · 4m")
     compare(list.rowAt(0).replyText, "")
     compare(list.rowAt(0).chipCount, 0)
     compare(list.rowAt(1).subtitleText, "Done · 50m ago")
@@ -106,6 +106,24 @@ TestCase {
     var row = list.rowAt(0)
     mouseClick(row, row.width / 2, 10, Qt.RightButton)
     compare(forgotten, ["bbbb2222"])
+  }
+
+  // The step used to share the status line, where it pushed the time aside
+  // and elided as soon as Claude did anything worth reporting.
+  function test_step_has_its_own_line_below_the_status() {
+    var list = makeList({ sessions: [
+      { shortId: "run1", status: "thinking", startedAt: 1000000000 - 240000, prompt: "build it", step: "Editing App.jsx" },
+      { shortId: "done1", status: "done", startedAt: 1000000000 - 3600000, finishedAt: 1000000000 - 3000000, prompt: "made it", step: "Editing App.jsx" }
+    ] })
+    var running = list.rowAt(0)
+    compare(running.stepText, "Editing App.jsx")
+    verify(running.stepVisible)
+    verify(running.stepY > running.statusY)
+    // Indented to sit under the status word, past the kind glyph and the dot.
+    verify(running.stepX > 0)
+    var finished = list.rowAt(1)
+    compare(finished.stepText, "")
+    verify(!finished.stepVisible)
   }
 
   function test_cursor_follows_keyboard() {

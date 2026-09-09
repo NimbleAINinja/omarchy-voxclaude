@@ -83,6 +83,11 @@ Column {
       readonly property string statusText: Model.statusLabel(status)
       readonly property string timeText: Model.relativeTime(modelData.startedAt, root.nowMs)
       readonly property string subtitleText: Model.rowSubtitle(modelData, root.nowMs)
+      readonly property string stepText: Model.rowStep(modelData)
+      readonly property bool stepVisible: stepLabel.visible
+      readonly property real stepX: stepLabel.x
+      readonly property real stepY: stepLabel.y
+      readonly property real statusY: statusRow.y
       // bin/voxclaude stores the reply as prose already; stripping markdown a
       // second time here would only eat characters it meant to keep.
       readonly property string replyText: status === "done" ? Model.excerpt(modelData.reply, 160) : ""
@@ -177,6 +182,7 @@ Column {
 
         // Status dot and word in the tone colour, the rest of the line dim.
         Row {
+          id: statusRow
           width: parent.width
           spacing: 5
 
@@ -206,6 +212,21 @@ Column {
             font.pixelSize: root.captionSize
             elide: Text.ElideRight
           }
+        }
+
+        // Indented to start under the status word rather than the kind glyph,
+        // with the same arithmetic the status line uses for its own width.
+        Text {
+          id: stepLabel
+          textFormat: Text.PlainText
+          visible: row.stepText !== ""
+          x: root.captionSize + 17
+          width: parent.width - x
+          text: row.stepText
+          color: root.dim
+          font.family: root.fontFamily
+          font.pixelSize: root.captionSize
+          elide: Text.ElideRight
         }
 
         Text {

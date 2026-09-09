@@ -276,15 +276,19 @@ function isRunning(status) {
 function rowSubtitle(session, nowMs) {
   var s = session || {}
   var parts = [statusLabel(s.status)]
-  if (isRunning(s.status)) {
-    parts.push(elapsed(s.startedAt, nowMs))
-    parts.push(String(s.step || ""))
-  } else {
-    parts.push(relativeTime(s.finishedAt || s.startedAt, nowMs))
-  }
+  parts.push(isRunning(s.status) ? elapsed(s.startedAt, nowMs)
+                                 : relativeTime(s.finishedAt || s.startedAt, nowMs))
   var out = []
   for (var i = 0; i < parts.length; i++) if (parts[i] !== "") out.push(parts[i])
   return out.join(" · ")
+}
+
+// What Claude is doing right now. It gets a line of its own under the status:
+// it is the longest part of the row and the part that changes every few
+// seconds, so sharing a line with the clock made both of them elide.
+function rowStep(session) {
+  var s = session || {}
+  return isRunning(s.status) ? String(s.step || "") : ""
 }
 
 function resultLabel(result) {
@@ -303,6 +307,6 @@ if (typeof module !== "undefined" && module.exports) {
     sortSessions: sortSessions, relativeTime: relativeTime, overallStatus: overallStatus,
     SPRITE_FRAMES: SPRITE_FRAMES, spritePixels: spritePixels, litCount: litCount,
     spriteFrame: spriteFrame, spriteInterval: spriteInterval,
-    elapsed: elapsed, isRunning: isRunning, rowSubtitle: rowSubtitle, resultLabel: resultLabel
+    elapsed: elapsed, isRunning: isRunning, rowSubtitle: rowSubtitle, rowStep: rowStep, resultLabel: resultLabel
   }
 }

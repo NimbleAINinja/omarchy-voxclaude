@@ -21,10 +21,10 @@ Built for the [Omarchy](https://omarchy.org) shell on top of
   dev server), red when it needs you or something failed, grey when stopped.
   A finished session that wakes up again (a background task reporting back, or
   a follow-up you typed after attaching) goes back to yellow.
-  Every row shows the prompt, a live one-liner (status · elapsed · what Claude
-  is doing right now, e.g. "Running: Install deps" or "Editing App.jsx"), the
-  reply once done, and chips for anything the reply points at: URLs and files
-  that exist. Click a row to open it in a terminal, done or not, so you can
+  Every row shows the prompt, then status · elapsed, then what Claude is doing
+  right now on a line of its own (e.g. "Running: Install deps" or "Editing
+  App.jsx"), the reply once done, and chips for anything the reply points at:
+  URLs and files that exist. Click a row to open it in a terminal, done or not, so you can
   drop into a task or carry it on. Click a chip to open the result. Hovering a
   row reveals a pin: it keeps the row near the top, below anything waiting on
   you, and exempt from the 24-hour prune, and stays visible once set.

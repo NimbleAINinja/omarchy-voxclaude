@@ -183,16 +183,25 @@ test("elapsed renders a compact duration", () => {
   assert.equal(Model.elapsed(0, now), "")
 })
 
-test("rowSubtitle joins status, time and the current step", () => {
+test("rowSubtitle is the status and the time, without the step", () => {
   const now = 1_000_000_000
   const running = { status: "thinking", startedAt: now - 4 * 60_000, step: "Editing App.jsx" }
-  assert.equal(Model.rowSubtitle(running, now), "Claude is working · 4m · Editing App.jsx")
+  assert.equal(Model.rowSubtitle(running, now), "Claude is working · 4m")
   const waiting = { status: "needs-input", startedAt: now - 60_000, step: "Running: rm -rf build" }
-  assert.equal(Model.rowSubtitle(waiting, now), "Claude needs you · 1m · Running: rm -rf build")
+  assert.equal(Model.rowSubtitle(waiting, now), "Claude needs you · 1m")
   const done = { status: "done", startedAt: now - 3600_000, finishedAt: now - 3000_000, step: "Editing App.jsx" }
   assert.equal(Model.rowSubtitle(done, now), "Done · 50m ago")
   const stopped = { status: "stopped", startedAt: now - 120_000 }
   assert.equal(Model.rowSubtitle(stopped, now), "Stopped · 2m ago")
+})
+
+test("rowStep is the live step, and only while the session is running", () => {
+  assert.equal(Model.rowStep({ status: "thinking", step: "Editing App.jsx" }), "Editing App.jsx")
+  assert.equal(Model.rowStep({ status: "needs-input", step: "Running: rm -rf build" }), "Running: rm -rf build")
+  assert.equal(Model.rowStep({ status: "thinking" }), "")
+  assert.equal(Model.rowStep({ status: "done", step: "Editing App.jsx" }), "")
+  assert.equal(Model.rowStep({ status: "stopped", step: "Editing App.jsx" }), "")
+  assert.equal(Model.rowStep(null), "")
 })
 
 test("resultLabel shortens urls and paths for chips", () => {
@@ -236,7 +245,9 @@ test("waiting is a busy-toned status with its own label and a still sprite", () 
   assert.equal(Model.spriteInterval("waiting"), 0)
   assert.deepEqual(Model.glyphFor("waiting"), { glyph: Model.glyphFor("idle").glyph, active: true, urgent: false })
   const now = 1_000_000_000
-  assert.equal(Model.rowSubtitle({ status: "waiting", startedAt: now - 60_000, step: "Running: poll build" }, now), "Waiting on a background task · 1m · Running: poll build")
+  const polling = { status: "waiting", startedAt: now - 60_000, step: "Running: poll build" }
+  assert.equal(Model.rowSubtitle(polling, now), "Waiting on a background task · 1m")
+  assert.equal(Model.rowStep(polling), "Running: poll build")
   assert.equal(Model.overallStatus([{ status: "done" }, { status: "waiting" }]), "waiting")
   assert.equal(Model.overallStatus([{ status: "waiting" }, { status: "thinking" }]), "thinking")
 })
