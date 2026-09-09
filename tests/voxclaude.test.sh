@@ -116,19 +116,28 @@ check "headless sets status thinking" test "$(status)" = thinking
 check "headless toast names the prompt" called $'omarchy-notification-send\t.*create hello.txt'
 check "headless tells Claude it was launched by voice" called -- '--append-system-prompt .*cannot see'
 check "dispatch publishes the sessions feed" bash -c "jq -e 'length == 1 and .[0].shortId == \"abcd1234\" and .[0].step == \"\"' '$RT/sessions.json' >/dev/null"
+check "a headless session is told nobody is watching" called '--append-system-prompt'
 
 # ---- dispatch: terminal ---------------------------------------------------
+# A terminal word opens a window on the session; the session itself still
+# belongs to the Claude daemon, so closing that window cannot stop the work.
 reset; VOXTYPE_TEXT="open a terminal and run the tests" "$script" stop
-check "terminal word launches an interactive claude" called $'omarchy-launch-tui\t'"$HOME/Work"$'\t--app-id=org.omarchy.voxclaude claude --permission-mode auto -- open a terminal and run the tests'
-check "terminal path starts no background session" not_called $'^claude\t'
-check "terminal path returns to idle" test "$(status)" = idle
+check "a terminal word still starts a background session" called $'^claude\t'"$HOME/Work"$'\t--bg'
+check "a terminal word opens a window attached to that session" \
+  called $'omarchy-launch-or-focus-tui\t.*--app-id=org.omarchy.voxclaude.abcd1234 claude attach abcd1234'
+check "a terminal word never runs claude inside the window" not_called $'omarchy-launch-tui\t.*claude --permission-mode'
+check "a watched session is not told the user cannot see it" not_called '--append-system-prompt'
+check "a terminal request is tracked like any other" bash -c "jq -e '.status == \"thinking\" and .prompt == \"open a terminal and run the tests\"' '$RT/sessions/abcd1234.json' >/dev/null"
+check "a terminal request sets the bar working" test "$(status)" = thinking
+check "a terminal request lets the window speak for itself" not_called 'Working on it'
 
 # ---- settings from shell.json ---------------------------------------------
 cat > "$HOME/.config/omarchy/shell.json" <<JSON
 {"bar":{"layout":{"right":[{"id":"io.github.nimbleaininja.voxclaude","cwd":"~/Proj","permissionMode":"acceptEdits","terminalWords":"terminal, shell","waitSeconds":25}]}}}
 JSON
 reset; VOXTYPE_TEXT="in a shell please" "$script" stop
-check "extra trigger words route to the terminal" called $'omarchy-launch-tui\t'"$HOME/Proj"$'\t.*--permission-mode acceptEdits'
+check "extra trigger words open a window on the session" called $'omarchy-launch-or-focus-tui\t.*claude attach abcd1234'
+check "extra trigger words still honour the settings" called $'^claude\t'"$HOME/Proj"$'\t--bg.*--permission-mode acceptEdits'
 reset; "$script" start; : > "$LOG"; VOXTYPE_TEXT="plain task" "$script" stop
 check "waitSeconds setting reaches voxtype" called $'record stop --wait --timeout 25'
 check "cwd and permissionMode settings reach claude" called $'claude\t'"$HOME/Proj"$'\t--bg .*--permission-mode acceptEdits'

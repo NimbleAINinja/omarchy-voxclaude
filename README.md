@@ -3,7 +3,9 @@
 Hold a key, say what you want, let go. Claude Code does it in the background and
 tells you when it is done. A terminal opens only when you ask for one ("open a
 terminal and …") or when Claude needs you: a permission prompt, a question, a
-tool asking for input.
+tool asking for input. Either way the session itself runs in the background, so
+closing that window leaves the work running and clicking the row picks it back
+up.
 
 Built for the [Omarchy](https://omarchy.org) shell on top of
 [voxtype](https://github.com/peteonrails/voxtype) and the
@@ -126,7 +128,7 @@ Set on the widget's entry in `shell.json` (or via the bar settings UI):
 |---|---|---|
 | `cwd` | `~/Work` | Directory the Claude session starts in |
 | `permissionMode` | `auto` | `claude --permission-mode`; anything that would prompt opens a terminal instead |
-| `terminalWords` | `terminal` | Comma-separated words that route the request to an interactive terminal |
+| `terminalWords` | `terminal` | Comma-separated words that also open a terminal window on the session |
 | `waitSeconds` | `60` | How long to wait for voxtype's transcript |
 
 ## How it works
@@ -134,8 +136,8 @@ Set on the widget's entry in `shell.json` (or via the bar settings UI):
 ```
 Super+D down   voxclaude start     voxtype record start --file=$RT/prompt.txt
 Super+D up     voxclaude stop      voxtype record stop --wait  →  transcript
-                                   ├─ says a terminal word → foot window: claude --permission-mode <mode> -- "<text>"
-                                   └─ otherwise          → claude --bg --settings $RT/hooks.json -- "<text>"
+                                   claude --bg --settings $RT/hooks.json -- "<text>"
+                                   └─ said a terminal word → foot window: claude attach <shortId>
 Claude hooks   SessionStart       → voxclaude hook start       → record + window for terminal sessions
                PreToolUse         → voxclaude hook tool        → progress line; done → busy again
                UserPromptSubmit   → voxclaude hook prompt      → new turn: done → busy again
@@ -182,6 +184,11 @@ Findings from the CLI this was built against (Claude Code 2.1.266):
 
 - Let go of Super before D and the release bind never fires; recording keeps
   going. Press Super+D again: `start` notices the recording marker and stops.
+- Closing a window VoxClaude opened never stops the work: every session it
+  starts belongs to the Claude daemon, and the window is only a `claude attach`
+  onto it ("The session keeps running either way", says `claude attach --help`).
+  A session you started yourself in your own terminal is an ordinary
+  interactive one and does end with its window.
 - Nothing heard (voxtype exit 3) → quiet toast, back to idle.
 - voxtype daemon down or Claude not logged in → error glyph plus a toast with
   the first line of stderr. `voxclaude status` prints the current word.

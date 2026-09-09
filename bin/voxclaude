@@ -498,26 +498,28 @@ cmd_stop() {
 }
 
 cmd_dispatch() {
-  local text=$1 cwd mode
+  local text=$1 cwd mode watched=0
   [[ -n ${text//[[:space:]]/} ]] || { set_status idle; return; }
   load_settings; set_now
   cwd=${S_CWD/#\~/$HOME}
   mode=$S_MODE
 
-  if wants_terminal "$text" "$S_WORDS"; then
-    (cd "$cwd" && launch omarchy-launch-tui --app-id=$APP_ID claude --permission-mode "$mode" -- "$text")
-    set_status idle
-    return
-  fi
+  # Asking for a terminal opens a window on the session, not a Claude inside
+  # the window: the session belongs to the Claude daemon either way, so closing
+  # the window leaves the work running and clicking the row picks it back up.
+  wants_terminal "$text" "$S_WORDS" && watched=1
 
-  local -a settings_args=()
+  local -a settings_args=() prompt_args=()
   if ! global_hooks_installed; then
     write_hooks
     settings_args=(--settings "$HOOKS_FILE")
   fi
+  # That appended note tells Claude nobody can see this session. With a window
+  # open on it, somebody can.
+  (( watched )) || prompt_args=(--append-system-prompt "$VOICE_PROMPT")
   local out short
   out=$(cd "$cwd" && claude --bg --name "voice: $(excerpt "$text" 40)" "${settings_args[@]}" \
-        --permission-mode "$mode" --append-system-prompt "$VOICE_PROMPT" -- "$text" 2>&1 </dev/null)
+        --permission-mode "$mode" "${prompt_args[@]}" -- "$text" 2>&1 </dev/null)
   short=$(grep -oiE 'backgrounded[^0-9a-f]*[0-9a-f]{6,}' <<< "$out" | grep -oE '[0-9a-f]{6,}$' | head -1)
   if [[ -z $short ]]; then
     set_status error
@@ -541,7 +543,10 @@ cmd_dispatch() {
     write_feed
   fi
   set_status thinking
-  notify -u low -t 3000 -g "$ROBOT" "Working on it" "$(excerpt "$text" 120)"
+  # A window opening is announcement enough; a toast on top of it is noise.
+  if (( watched )); then open_attached "$short"
+  else notify -u low -t 3000 -g "$ROBOT" "Working on it" "$(excerpt "$text" 120)"
+  fi
 }
 
 cmd_hook_needs_input() {
