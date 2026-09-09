@@ -11,6 +11,8 @@ Built for the [Omarchy](https://omarchy.org) shell on top of
 [voxtype](https://github.com/peteonrails/voxtype) and the
 [Claude Code](https://code.claude.com) CLI.
 
+<p align="center"><img src="preview.png" width="340" alt="The VoxClaude popover: two sessions working, one done with its result chips"></p>
+
 ## What you get
 
 - **Bar critter**: a pixel-art invader with Claude's eyes. It sits still when
