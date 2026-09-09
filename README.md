@@ -16,9 +16,8 @@ Built for the [Omarchy](https://omarchy.org) shell on top of
 - **Bar critter**: a pixel-art invader with Claude's eyes. It sits still when
   idle, blinks while listening, swings its arms and legs while Claude works,
   waves faster in the urgent colour when Claude needs you, and turns red when
-  something failed. When a session finishes it shuts its eyes and blinks green
-  three times over three seconds, so a finished task registers even if you
-  missed the toast.
+  something failed. When a session finishes it blinks green three times over
+  three seconds, so a finished task registers even if you missed the toast.
   Hover for the current prompt and step.
 - **Popover** (left-click) with the recent voice sessions, needs-input first.
   Each row carries a status dot and word: green when done, yellow while Claude

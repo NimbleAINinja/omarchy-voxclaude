@@ -1,9 +1,9 @@
 import QtQuick
 
 // Three blinks when a session finishes, spread over three seconds. The bar
-// critter shuts its eyes and goes green, so a finished task registers from the
-// corner of your eye even when the toast is off screen or you were looking
-// elsewhere.
+// critter flashes green, so a finished task registers from the corner of your
+// eye even when the toast is off screen or you were looking elsewhere. The
+// flash is colour only and leaves the eyes where they are.
 //
 // A blink is short and the look back at you is long, which is what makes it
 // read as blinking rather than pulsing. Pure QtQuick: Panel.qml owns the

@@ -190,8 +190,9 @@ Panel {
           // otherwise put the sprite on a half pixel and undo its own snapping.
           x: Math.round((iconSlot.width - width) / 2 * dpr) / dpr
           y: Math.round((iconSlot.height - height) / 2 * dpr) / dpr
-          frame: root.finishing ? Model.SPRITE_FRAMES.blink
-                                : Model.spriteFrame(root.status, root.tick)
+          // The flash is colour only: the critter's eyes are unlit cells, so
+          // borrowing the eyes-shut frame for it filled them in.
+          frame: Model.spriteFrame(root.status, root.tick)
           color: root.spriteColor
           opacity: root.status === "idle" && !root.finishing ? 0.85 : 1
         }
@@ -260,8 +261,7 @@ Panel {
               height: Style.font.display
               // The hero stays mounted while the popover is closed, so only
               // follow the animation tick when someone can see it.
-              frame: root.finishing ? Model.SPRITE_FRAMES.blink
-                   : root.opened ? Model.spriteFrame(root.status, root.tick)
+              frame: root.opened ? Model.spriteFrame(root.status, root.tick)
                                  : Model.spriteFrame(root.status, 0)
               color: root.spriteColor
             }
