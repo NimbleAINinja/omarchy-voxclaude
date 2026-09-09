@@ -18,6 +18,7 @@ Panel {
 
   readonly property color foreground: bar ? bar.foreground : Color.foreground
   readonly property color urgent: bar ? bar.urgent : Color.urgent
+  readonly property color okColor: "#7bbf6a"
   readonly property color dim: Qt.darker(foreground, 1.55)
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
 
@@ -31,9 +32,15 @@ Panel {
   property string keybind: ""
   property var sessions: []
   property double nowMs: Date.now()
+  // -1 until the feed has been read once, so a shell restart does not blink
+  // for work that finished before it started.
+  property double lastFinish: -1
+  readonly property bool finishing: finishBlink.lit
   property int tick: 0
 
   readonly property var look: Model.glyphFor(status)
+  readonly property color spriteColor: finishing ? okColor
+                                     : look.urgent ? urgent : foreground
   // SessionList has already sorted them; sorting the same array again here
   // just to read its head is work for nothing.
   readonly property var latest: list.count > 0 ? list.rows[0] : null
@@ -119,9 +126,16 @@ Panel {
         root.sessions = []
       }
       root.nowMs = Date.now()
+      // Something finished since the last time the feed was written.
+      var finish = Model.latestFinish(root.sessions)
+      if (root.lastFinish >= 0 && finish > root.lastFinish) finishBlink.trigger()
+      root.lastFinish = finish
     }
     onLoadFailed: root.sessions = []
   }
+
+  // Three green blinks when a session finishes.
+  FinishBlink { id: finishBlink }
 
   // Keep "4m" and "2m ago" honest while the popover sits open.
   Timer {
@@ -173,9 +187,10 @@ Panel {
           // otherwise put the sprite on a half pixel and undo its own snapping.
           x: Math.round((iconSlot.width - width) / 2 * dpr) / dpr
           y: Math.round((iconSlot.height - height) / 2 * dpr) / dpr
-          frame: Model.spriteFrame(root.status, root.tick)
-          color: root.look.urgent ? root.urgent : root.foreground
-          opacity: root.status === "idle" ? 0.85 : 1
+          frame: root.finishing ? Model.SPRITE_FRAMES.blink
+                                : Model.spriteFrame(root.status, root.tick)
+          color: root.spriteColor
+          opacity: root.status === "idle" && !root.finishing ? 0.85 : 1
         }
       }
     }
@@ -242,9 +257,10 @@ Panel {
               height: Style.font.display
               // The hero stays mounted while the popover is closed, so only
               // follow the animation tick when someone can see it.
-              frame: root.opened ? Model.spriteFrame(root.status, root.tick)
+              frame: root.finishing ? Model.SPRITE_FRAMES.blink
+                   : root.opened ? Model.spriteFrame(root.status, root.tick)
                                  : Model.spriteFrame(root.status, 0)
-              color: root.look.urgent ? root.urgent : root.foreground
+              color: root.spriteColor
             }
           }
         }
@@ -268,7 +284,7 @@ Panel {
           foreground: root.foreground
           dim: root.dim
           urgent: root.urgent
-          okColor: "#7bbf6a"
+          okColor: root.okColor
           busyColor: "#d9b44a"
           fontFamily: root.fontFamily
           fontSize: Style.font.bodySmall

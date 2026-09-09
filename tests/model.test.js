@@ -216,6 +216,19 @@ test("visibleSessions drops rows with no prompt, unless they need you", () => {
   assert.deepEqual(Model.visibleSessions(null), [])
 })
 
+test("latestFinish is the newest finish among the sessions that are done", () => {
+  assert.equal(Model.latestFinish([
+    { status: "done", finishedAt: 100 },
+    { status: "done", finishedAt: 300 },
+    { status: "thinking", finishedAt: 0 }
+  ]), 300)
+  // A turn that ended but left a background command running has not finished.
+  assert.equal(Model.latestFinish([{ status: "waiting", finishedAt: 900 }]), 0)
+  assert.equal(Model.latestFinish([{ status: "stopped" }, { status: "thinking" }]), 0)
+  assert.equal(Model.latestFinish([]), 0)
+  assert.equal(Model.latestFinish(null), 0)
+})
+
 test("resultLabel shortens urls and paths for chips", () => {
   assert.equal(Model.resultLabel({ kind: "url", value: "http://localhost:5173/" }), "localhost:5173")
   assert.equal(Model.resultLabel({ kind: "url", value: "https://example.com/some/long/path?x=1" }), "example.com/some/long/path")

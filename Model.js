@@ -306,6 +306,22 @@ function rowStep(session) {
   return isRunning(s.status) ? String(s.step || "") : ""
 }
 
+// The newest moment a session finished, for the widget's three green blinks.
+// Only sessions that are done count: a turn that ended while a command it
+// started is still running has not finished, and gets no toast either.
+function latestFinish(list) {
+  var items = toList(list)
+  if (!items) return 0
+  var max = 0
+  for (var i = 0; i < items.length; i++) {
+    var s = items[i] || {}
+    if (s.status !== "done") continue
+    var at = Number(s.finishedAt || 0)
+    if (at > max) max = at
+  }
+  return max
+}
+
 function resultLabel(result) {
   var value = String(result && result.value || "")
   if (result && result.kind === "url") {
@@ -319,7 +335,7 @@ if (typeof module !== "undefined" && module.exports) {
   module.exports = {
     STATUSES: STATUSES, toList: toList, terminalPattern: terminalPattern, wantsTerminal: wantsTerminal,
     parseBgOutput: parseBgOutput, glyphFor: glyphFor, statusLabel: statusLabel, emptyHint: emptyHint, statusTone: statusTone, kindGlyph: kindGlyph, plainText: plainText, escapeHtml: escapeHtml, excerpt: excerpt,
-    sortSessions: sortSessions, visibleSessions: visibleSessions, relativeTime: relativeTime, overallStatus: overallStatus,
+    sortSessions: sortSessions, visibleSessions: visibleSessions, relativeTime: relativeTime, overallStatus: overallStatus, latestFinish: latestFinish,
     SPRITE_FRAMES: SPRITE_FRAMES, spritePixels: spritePixels, litCount: litCount,
     spriteFrame: spriteFrame, spriteInterval: spriteInterval,
     elapsed: elapsed, isRunning: isRunning, rowSubtitle: rowSubtitle, rowStep: rowStep, resultLabel: resultLabel
