@@ -19,6 +19,9 @@ Panel {
   readonly property color foreground: bar ? bar.foreground : Color.foreground
   readonly property color urgent: bar ? bar.urgent : Color.urgent
   readonly property color okColor: "#7bbf6a"
+  // The finish blink fills the whole critter, so it wants a deeper green than
+  // the status dots, which are 7px across and need the brightness to read.
+  readonly property color blinkColor: "#40782f"
   readonly property color dim: Qt.darker(foreground, 1.55)
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
 
@@ -39,7 +42,7 @@ Panel {
   property int tick: 0
 
   readonly property var look: Model.glyphFor(status)
-  readonly property color spriteColor: finishing ? okColor
+  readonly property color spriteColor: finishing ? blinkColor
                                      : look.urgent ? urgent : foreground
   // SessionList has already sorted them; sorting the same array again here
   // just to read its head is work for nothing.
