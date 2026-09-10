@@ -448,6 +448,18 @@ check "the note is still dropped when it is only filler" \
   test "$(reply_after 'Sorted. No output file this time.')" = 'Sorted.'
 check "a nothing-to-open note is dropped too" \
   test "$(reply_after 'Done. Nothing to open here.')" = 'Done.'
+# Replies arrive as markdown and are shown as prose, so a row and a toast read
+# as a sentence rather than as source.
+check "markdown in a reply becomes prose" \
+  test "$(reply_after '## Done
+- fixed **the** parser
+See [the docs](https://example.com/x) and `a.txt`')" = 'Done fixed the parser See the docs and a.txt'
+check "a fenced code block keeps its command, not its fence" \
+  test "$(reply_after 'Run it yourself:
+```bash
+npm test
+```
+All green.')" = 'Run it yourself: npm test All green.'
 
 # ---- recording states are not clobbered -------------------------------------------
 reset; VOXTYPE_TEXT="do a thing" "$script" stop
@@ -655,6 +667,31 @@ check "list --json prints the session records" bash -c "'$script' list --json | 
 check "attach latest opens the newest session" called $'omarchy-launch-or-focus-tui\t.*claude attach abcd1234'
 : > "$LOG"; "$script" attach abcd1234
 check "attach by id opens that session" called 'claude attach abcd1234'
+
+# "latest" has to mean what the widget calls the top row, or right-clicking the
+# bar attaches to a different session than the tooltip just named. The order is
+# Model.sortSessions': needs-input first, then pinned, then newest.
+mkrec() { # <shortId> <status> <startedAt> <pinned>
+  jq -n --arg id "$1" --arg st "$2" --argjson at "$3" --argjson pin "$4" \
+    '{shortId:$id, sessionId:($id + "-0000-4000-8000-000000000000"), prompt:"p", cwd:"/tmp",
+      startedAt:$at, updatedAt:$at, finishedAt:0, status:$st, step:"", reply:"", results:[],
+      pinned:$pin, hidden:false, kind:"voice", window:null, pid:0}' > "$RT/sessions/$1.json"
+}
+reset; mkdir -p "$RT/sessions"
+mkrec newest00 done 900 false
+mkrec pinned00 done 500 true
+mkrec blocked0 needs-input 100 false
+: > "$LOG"; "$script" attach latest
+check "attach latest takes the session that needs you first" called 'claude attach blocked0'
+rm -f "$RT/sessions/blocked0.json"
+: > "$LOG"; "$script" attach latest
+check "attach latest then takes a pinned row over a newer one" called 'claude attach pinned00'
+rm -f "$RT/sessions/pinned00.json"
+mkrec hidden00 done 950 false
+jq '.hidden = true' "$RT/sessions/hidden00.json" > "$tmp/h" && mv "$tmp/h" "$RT/sessions/hidden00.json"
+: > "$LOG"; "$script" attach latest
+check "attach latest never lands on a row you hid" called 'claude attach newest00'
+reset
 
 # ---- keybind ----------------------------------------------------------------
 # The widget's hint must name the key the user actually bound, not the one the

@@ -259,6 +259,7 @@ Column {
         }
 
         Flow {
+          id: chipFlow
           visible: row.chipCount > 0
           width: parent.width
           spacing: 4
@@ -274,7 +275,13 @@ Column {
               readonly property string label: Model.resultLabel(modelData)
               readonly property int labelFormat: chipLabel.textFormat
 
-              width: chipLabel.implicitWidth + 14
+              // Never wider than the row: a Flow cannot shrink an oversized
+              // child, so a long label used to run past the popover edge and
+              // be cut off by the clip, with no ellipsis to show for it.
+              // Before the Flow has a width, the natural size stands, or the
+              // chip would collapse to nothing and swallow its own clicks.
+              readonly property real maxWidth: chipFlow.width > 0 ? chipFlow.width : Number.MAX_VALUE
+              width: Math.min(chipLabel.implicitWidth + 14, maxWidth)
               height: chipLabel.implicitHeight + 6
               radius: height / 2
               color: chipHover.containsMouse
@@ -285,6 +292,9 @@ Column {
                 id: chipLabel
                 textFormat: Text.PlainText
                 anchors.centerIn: parent
+                width: Math.max(0, chip.width - 14)
+                elide: Text.ElideRight
+                horizontalAlignment: Text.AlignHCenter
                 text: (chip.modelData.kind === "url" ? "🌐 " : "📄 ") + chip.label
                 color: root.foreground
                 font.family: root.fontFamily

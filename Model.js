@@ -1,59 +1,12 @@
 // Pure helpers shared by Panel.qml and the node tests. No Qt, no I/O.
 // Loaded by QML as `import "Model.js" as Model` and by node via module.exports.
 
-var STATUSES = ["idle", "listening", "transcribing", "thinking", "needs-input", "terminal", "error", "done"]
-
 function toList(value) {
   if (Array.isArray(value)) return value
   if (!value || typeof value !== "object" || typeof value.length !== "number") return null
   var out = []
   for (var i = 0; i < value.length; i++) out.push(value[i])
   return out
-}
-
-function escapeRegex(text) {
-  return String(text).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
-}
-
-// Comma-separated trigger words -> "a|b|c" alternation usable from both JS and
-// bash's [[ =~ ]] (ERE). Blank entries are dropped.
-function terminalPattern(words) {
-  var parts = String(words || "").split(",")
-  var out = []
-  for (var i = 0; i < parts.length; i++) {
-    var word = parts[i].trim()
-    if (word !== "") out.push(escapeRegex(word))
-  }
-  return out.join("|")
-}
-
-function wantsTerminal(text, words) {
-  var pattern = terminalPattern(words)
-  if (pattern === "" || !text) return false
-  var re = new RegExp("(^|[^A-Za-z0-9_])(" + pattern + ")([^A-Za-z0-9_]|$)", "i")
-  return re.test(String(text))
-}
-
-// `claude --bg` prints "backgrounded · <shortId> · <name>".
-function parseBgOutput(stdout) {
-  var match = /backgrounded\s*[·:-]?\s*([0-9a-f]{6,})/i.exec(String(stdout || ""))
-  return match ? match[1] : ""
-}
-
-function glyphFor(status) {
-  var mic = String.fromCodePoint(0xF036C)
-  var hourglass = String.fromCodePoint(0xF051F)
-  var robot = String.fromCodePoint(0xF16A3)
-  var alert = String.fromCodePoint(0xF05D6)
-  switch (status) {
-  case "listening": return { glyph: mic, active: true, urgent: false }
-  case "transcribing": return { glyph: hourglass, active: true, urgent: false }
-  case "thinking": return { glyph: robot, active: true, urgent: false }
-  case "needs-input": return { glyph: robot, active: true, urgent: true }
-  case "error": return { glyph: alert, active: false, urgent: true }
-  case "waiting": return { glyph: mic, active: true, urgent: false }
-  default: return { glyph: mic, active: false, urgent: false }
-  }
 }
 
 // The hold key is whatever the user bound; bin/voxclaude keybind resolves it
@@ -91,21 +44,6 @@ function statusTone(status) {
   }
 }
 
-// Markdown → prose for excerpts: code fences and inline code lose their
-// ticks, links keep their text, headings, bullets and emphasis markers go.
-// Lone asterisks ("2 * 3") and snake_case survive.
-function plainText(markdown) {
-  var text = String(markdown || "")
-  text = text.replace(/^\s*```.*$/gm, "")
-  text = text.replace(/`([^`]*)`/g, "$1")
-  text = text.replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1")
-  text = text.replace(/^\s*#{1,6}\s+/gm, "")
-  text = text.replace(/^\s*(?:[-*+]|\d+\.)\s+/gm, "")
-  text = text.replace(/(\*\*|__)(\S(?:[\s\S]*?\S)?)\1/g, "$2")
-  text = text.replace(/(^|[\s(])[*_](\S(?:[^*_\n]*?\S)?)[*_](?=[\s).,;:!?]|$)/g, "$1$2")
-  return text.replace(/\s+/g, " ").trim()
-}
-
 // Origin marker for a row: terminal-started sessions vs voice ones.
 function kindGlyph(kind) {
   return kind === "terminal" ? String.fromCodePoint(0xF018D) : String.fromCodePoint(0xF036C)
@@ -137,6 +75,19 @@ function visibleSessions(list) {
     if (String(s.prompt || "").trim() !== "" || s.status === "needs-input") out.push(items[i])
   }
   return out
+}
+
+// The session the bar word is describing. The bar takes needs-input over
+// thinking over waiting across every record (STATUS_FILTER in bin/voxclaude),
+// so pairing that word with the top row could label one session and name
+// another. Nothing matching means the word is about capture, not a session.
+function sessionForStatus(list, status) {
+  var items = toList(list)
+  if (!items) return null
+  for (var i = 0; i < items.length; i++) {
+    if (items[i] && items[i].status === status) return items[i]
+  }
+  return null
 }
 
 function sortSessions(list) {
@@ -196,18 +147,6 @@ function relativeTime(thenMs, nowMs) {
   var hours = Math.floor(minutes / 60)
   if (hours < 24) return hours + "h ago"
   return Math.floor(hours / 24) + "d ago"
-}
-
-function overallStatus(list) {
-  var items = toList(list) || []
-  var thinking = false, waiting = false
-  for (var i = 0; i < items.length; i++) {
-    var status = items[i] && items[i].status
-    if (status === "needs-input") return "needs-input"
-    if (status === "thinking") thinking = true
-    if (status === "waiting") waiting = true
-  }
-  return thinking ? "thinking" : (waiting ? "waiting" : "idle")
 }
 
 // ---------------------------------------------------------------- sprite
@@ -519,18 +458,8 @@ function isLit(ch) {
   return ch !== "" && ch !== "." && ch !== " "
 }
 
-function spritePixels(frame) {
-  var rows = toList(frame) || []
-  var out = []
-  for (var y = 0; y < rows.length; y++) {
-    var row = String(rows[y])
-    for (var x = 0; x < row.length; x++) if (isLit(row.charAt(x))) out.push({ x: x, y: y })
-  }
-  return out
-}
-
-// Just the count. spritePixels builds an object per lit cell, which is a lot
-// of garbage for a property re-read on every animation tick.
+// Just the count: a list of lit cells would mean an object per cell, which is
+// a lot of garbage for a property re-read on every animation tick.
 function litCount(frame) {
   var rows = toList(frame) || []
   var total = 0
@@ -550,6 +479,10 @@ function spriteFrame(status, tick) {
     return tick % 2 === 0 ? SPRITE_FRAMES.busyA : SPRITE_FRAMES.busyB
   case "listening":
     return tick % 4 === 3 ? SPRITE_FRAMES.blink : SPRITE_FRAMES.idle
+  // Claude's turn is over but a command it started will wake it: alive, not
+  // working. A slow blink says so without competing with the busy frames.
+  case "waiting":
+    return tick % 2 === 0 ? SPRITE_FRAMES.idle : SPRITE_FRAMES.blink
   default:
     return SPRITE_FRAMES.idle
   }
@@ -562,6 +495,7 @@ function spriteInterval(status) {
   case "transcribing": return 500
   case "needs-input": return 250
   case "listening": return 400
+  case "waiting": return 900
   default: return 0
   }
 }
@@ -669,7 +603,14 @@ function latestFinish(list) {
 function resultLabel(result) {
   var value = String(result && result.value || "")
   if (result && result.kind === "url") {
-    return value.replace(/^[a-z]+:\/\//i, "").replace(/[?#].*$/, "").replace(/\/+$/, "")
+    var clean = value.replace(/^[a-z]+:\/\//i, "").replace(/[?#].*$/, "").replace(/\/+$/, "")
+    if (clean.length <= 34) return clean
+    // A chip is sized to its label, so a deep link ran off the popover and was
+    // cut without an ellipsis. The host and the last segment are the parts
+    // that say what it is; the middle is what makes it long.
+    var parts = clean.split("/")
+    var folded = parts[0] + "/…/" + parts[parts.length - 1]
+    return folded.length < clean.length ? excerpt(folded, 40) : excerpt(clean, 34)
   }
   var segments = value.replace(/\/+$/, "").split("/")
   return segments.slice(-2).join("/")
@@ -677,11 +618,12 @@ function resultLabel(result) {
 
 if (typeof module !== "undefined" && module.exports) {
   module.exports = {
-    STATUSES: STATUSES, toList: toList, terminalPattern: terminalPattern, wantsTerminal: wantsTerminal,
-    parseBgOutput: parseBgOutput, glyphFor: glyphFor, statusLabel: statusLabel, emptyHint: emptyHint, statusTone: statusTone, kindGlyph: kindGlyph, plainText: plainText, escapeHtml: escapeHtml, excerpt: excerpt,
-    sortSessions: sortSessions, visibleSessions: visibleSessions, stableOrder: stableOrder, sessionIds: sessionIds, relativeTime: relativeTime, overallStatus: overallStatus, latestFinish: latestFinish,
+    toList: toList, statusLabel: statusLabel, emptyHint: emptyHint, statusTone: statusTone,
+    kindGlyph: kindGlyph, escapeHtml: escapeHtml, excerpt: excerpt,
+    sortSessions: sortSessions, visibleSessions: visibleSessions, stableOrder: stableOrder,
+    sessionIds: sessionIds, sessionForStatus: sessionForStatus, relativeTime: relativeTime, latestFinish: latestFinish,
     SPRITE_FRAMES: SPRITE_FRAMES, LAPTOP_FRAMES: LAPTOP_FRAMES, LAPTOP_INTRO: LAPTOP_INTRO, LAPTOP_TYPING: LAPTOP_TYPING,
-    isLit: isLit, spritePixels: spritePixels, litCount: litCount,
+    isLit: isLit, litCount: litCount,
     spriteFrame: spriteFrame, spriteInterval: spriteInterval,
     laptopOpen: laptopOpen, keepsTick: keepsTick, laptopFrame: laptopFrame, laptopInterval: laptopInterval,
     elapsed: elapsed, isRunning: isRunning, rowSubtitle: rowSubtitle, rowStep: rowStep, resultLabel: resultLabel

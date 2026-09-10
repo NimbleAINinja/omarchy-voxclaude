@@ -2,52 +2,6 @@ const test = require("node:test")
 const assert = require("node:assert/strict")
 const Model = require("../Model.js")
 
-test("wantsTerminal matches the word terminal anywhere, case-insensitively", () => {
-  assert.equal(Model.wantsTerminal("open a terminal and show git status", "terminal"), true)
-  assert.equal(Model.wantsTerminal("Terminal, please: run the tests", "terminal"), true)
-  assert.equal(Model.wantsTerminal("fix the failing test", "terminal"), false)
-})
-
-test("wantsTerminal needs a whole word, not a substring", () => {
-  assert.equal(Model.wantsTerminal("the patient is terminally ill", "terminal"), false)
-  assert.equal(Model.wantsTerminal("check the terminals array", "terminal"), false)
-})
-
-test("wantsTerminal honours extra comma-separated trigger words", () => {
-  assert.equal(Model.wantsTerminal("show me interactively", "terminal, interactively"), true)
-  assert.equal(Model.wantsTerminal("show me interactively", "terminal"), false)
-  assert.equal(Model.wantsTerminal("anything", ""), false)
-  assert.equal(Model.wantsTerminal("", "terminal"), false)
-})
-
-test("terminalPattern is a POSIX-safe alternation for the bash mirror", () => {
-  assert.equal(Model.terminalPattern("terminal"), "terminal")
-  assert.equal(Model.terminalPattern(" terminal , shell,, console "), "terminal|shell|console")
-  assert.equal(Model.terminalPattern("a.b"), "a\\.b")
-})
-
-test("parseBgOutput extracts the short id from claude --bg output", () => {
-  const out = "Starting background service…\nbackgrounded · f7a2edcf · voxspike\n  claude agents             list sessions\n"
-  assert.equal(Model.parseBgOutput(out), "f7a2edcf")
-  assert.equal(Model.parseBgOutput("backgrounded · 39182b7e"), "39182b7e")
-  assert.equal(Model.parseBgOutput("warning: nope\n"), "")
-  assert.equal(Model.parseBgOutput(null), "")
-})
-
-test("glyphFor maps every status to a glyph and an emphasis", () => {
-  const mic = String.fromCodePoint(0xF036C)
-  const hourglass = String.fromCodePoint(0xF051F)
-  const robot = String.fromCodePoint(0xF16A3)
-  const alert = String.fromCodePoint(0xF05D6)
-  assert.deepEqual(Model.glyphFor("idle"), { glyph: mic, active: false, urgent: false })
-  assert.deepEqual(Model.glyphFor("listening"), { glyph: mic, active: true, urgent: false })
-  assert.deepEqual(Model.glyphFor("transcribing"), { glyph: hourglass, active: true, urgent: false })
-  assert.deepEqual(Model.glyphFor("thinking"), { glyph: robot, active: true, urgent: false })
-  assert.deepEqual(Model.glyphFor("needs-input"), { glyph: robot, active: true, urgent: true })
-  assert.deepEqual(Model.glyphFor("error"), { glyph: alert, active: false, urgent: true })
-  assert.deepEqual(Model.glyphFor("bogus"), Model.glyphFor("idle"))
-})
-
 test("statusLabel is a short human phrase per status", () => {
   assert.equal(Model.statusLabel("idle", "Super+D"), "Hold Super+D and talk")
   assert.equal(Model.statusLabel("listening"), "Listening…")
@@ -125,16 +79,9 @@ test("relativeTime renders seconds, minutes, hours and days", () => {
   assert.equal(Model.relativeTime(0, now), "")
 })
 
-test("overallStatus derives the bar state from session records", () => {
-  assert.equal(Model.overallStatus([{ status: "done" }, { status: "needs-input" }]), "needs-input")
-  assert.equal(Model.overallStatus([{ status: "done" }, { status: "thinking" }]), "thinking")
-  assert.equal(Model.overallStatus([{ status: "done" }]), "idle")
-  assert.equal(Model.overallStatus([]), "idle")
-})
-
-test("statusLabel and glyphFor know about stopped sessions", () => {
+test("statusLabel knows about stopped sessions", () => {
   assert.equal(Model.statusLabel("stopped"), "Stopped")
-  assert.deepEqual(Model.glyphFor("stopped"), Model.glyphFor("idle"))
+  assert.equal(Model.statusTone("stopped"), "muted")
 })
 
 test("sprite frames are 9x8 grids of X and dots that use the full width", () => {
@@ -165,12 +112,6 @@ test("sprite frames are 9x8 grids of X and dots that use the full width", () => 
   assert.equal(idle.filter((row, i) => row !== blink[i]).length, 1)
 })
 
-test("spritePixels lists lit cells with coordinates", () => {
-  const pixels = Model.spritePixels(["X.X", ".X."])
-  assert.deepEqual(pixels, [{ x: 0, y: 0 }, { x: 2, y: 0 }, { x: 1, y: 1 }])
-  assert.deepEqual(Model.spritePixels(null), [])
-})
-
 test("spriteFrame animates only while busy", () => {
   assert.equal(Model.spriteFrame("idle", 0), Model.SPRITE_FRAMES.idle)
   assert.equal(Model.spriteFrame("idle", 7), Model.SPRITE_FRAMES.idle)
@@ -181,6 +122,9 @@ test("spriteFrame animates only while busy", () => {
   assert.equal(Model.spriteFrame("needs-input", 3), Model.SPRITE_FRAMES.busyB)
   assert.equal(Model.spriteFrame("listening", 0), Model.SPRITE_FRAMES.idle)
   assert.equal(Model.spriteFrame("listening", 3), Model.SPRITE_FRAMES.blink)
+  // Waiting is alive but not working: a slow blink, never the busy frames.
+  assert.equal(Model.spriteFrame("waiting", 0), Model.SPRITE_FRAMES.idle)
+  assert.equal(Model.spriteFrame("waiting", 1), Model.SPRITE_FRAMES.blink)
 })
 
 test("laptop frames are 17x11 grids in the gif's four colours", () => {
@@ -208,7 +152,7 @@ test("laptop frames are 17x11 grids in the gif's four colours", () => {
 })
 
 test("every non-dot cell is lit, so eyes, shading and laptop all paint", () => {
-  assert.deepEqual(Model.spritePixels(["XL", ".E"]), [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 }])
+  assert.equal(Model.litCount(["XL", ".E"]), 3)
   assert.equal(Model.litCount(["XSEL", "...."]), 4)
   for (const ch of ["X", "S", "E", "L"]) assert.ok(Model.isLit(ch), ch)
   for (const ch of [".", "", " "]) assert.ok(!Model.isLit(ch), JSON.stringify(ch))
@@ -269,6 +213,10 @@ test("spriteInterval is faster when Claude needs you and off when idle", () => {
   assert.equal(Model.spriteInterval("listening"), 400)
   assert.equal(Model.spriteInterval("idle"), 0)
   assert.equal(Model.spriteInterval("error"), 0)
+  // A waiting session animates, or it is indistinguishable from nothing
+  // running at all; slower than working, because it is not working.
+  assert.equal(Model.spriteInterval("waiting"), 900)
+  assert.ok(Model.spriteInterval("waiting") > Model.spriteInterval("thinking"))
 })
 
 test("elapsed renders a compact duration", () => {
@@ -339,6 +287,30 @@ test("resultLabel shortens urls and paths for chips", () => {
   assert.equal(Model.resultLabel({ kind: "url", value: "https://example.com/some/long/path?x=1" }), "example.com/some/long/path")
   assert.equal(Model.resultLabel({ kind: "path", value: "/home/x/Work/plants/index.html" }), "plants/index.html")
   assert.equal(Model.resultLabel({ kind: "path", value: "/home/x/Work/plants" }), "Work/plants")
+  // A chip is sized to its label, so a deep link has to fold: host, ellipsis,
+  // and the last segment, which are the parts that say what it is.
+  const deep = Model.resultLabel({ kind: "url",
+    value: "https://github.com/nimbleaininja/omarchy-voxclaude/blob/main/bin/voxclaude" })
+  assert.equal(deep, "github.com/…/voxclaude")
+  assert.ok(deep.length <= 40)
+  // Short ones are left exactly as they were.
+  assert.equal(Model.resultLabel({ kind: "url", value: "https://example.com/report.pdf" }), "example.com/report.pdf")
+})
+
+test("sessionForStatus finds the session the bar word is about", () => {
+  const rows = [
+    { shortId: "asking", status: "needs-input", prompt: "blocked" },
+    { shortId: "busy", status: "thinking", prompt: "working" },
+    { shortId: "old", status: "done", prompt: "finished" }
+  ]
+  // The bar takes the most urgent word across every record, so it can be
+  // describing a row that is not the first one.
+  assert.equal(Model.sessionForStatus(rows, "thinking").shortId, "busy")
+  assert.equal(Model.sessionForStatus(rows, "needs-input").shortId, "asking")
+  // Capture words belong to no session at all.
+  assert.equal(Model.sessionForStatus(rows, "listening"), null)
+  assert.equal(Model.sessionForStatus([], "thinking"), null)
+  assert.equal(Model.sessionForStatus(null, "thinking"), null)
 })
 
 test("sortSessions puts needs-input first, then pinned, then newest", () => {
@@ -368,27 +340,14 @@ test("escapeHtml neutralises markup for StyledText", () => {
   assert.equal(Model.escapeHtml(null), "")
 })
 
-test("waiting is a busy-toned status with its own label and a still sprite", () => {
+test("waiting is a busy-toned status with its own label and sprite", () => {
   assert.equal(Model.statusLabel("waiting"), "Waiting on a background task")
   assert.equal(Model.statusTone("waiting"), "busy")
-  assert.equal(Model.spriteFrame("waiting", 5), Model.SPRITE_FRAMES.idle)
-  assert.equal(Model.spriteInterval("waiting"), 0)
-  assert.deepEqual(Model.glyphFor("waiting"), { glyph: Model.glyphFor("idle").glyph, active: true, urgent: false })
+  assert.notDeepEqual(Model.spriteFrame("waiting", 1), Model.spriteFrame("idle", 1))
   const now = 1_000_000_000
   const polling = { status: "waiting", startedAt: now - 60_000, step: "Running: poll build" }
   assert.equal(Model.rowSubtitle(polling, now), "Waiting on a background task · 1m")
   assert.equal(Model.rowStep(polling), "Running: poll build")
-  assert.equal(Model.overallStatus([{ status: "done" }, { status: "waiting" }]), "waiting")
-  assert.equal(Model.overallStatus([{ status: "waiting" }, { status: "thinking" }]), "thinking")
-})
-
-test("plainText strips markdown so replies read as prose", () => {
-  assert.equal(Model.plainText("**Root cause:** the VM `freezes` while *sleeping*"), "Root cause: the VM freezes while sleeping")
-  assert.equal(Model.plainText("## Done\n- first item\n- second item\n1. third"), "Done first item second item third")
-  assert.equal(Model.plainText("See [the docs](https://example.com/x) and ~/Work/`a.txt`"), "See the docs and ~/Work/a.txt")
-  assert.equal(Model.plainText("```bash\nnpm test\n```\nAll green."), "npm test All green.")
-  assert.equal(Model.plainText("2 * 3 = 6 and a_b_c stays"), "2 * 3 = 6 and a_b_c stays")
-  assert.equal(Model.plainText(null), "")
 })
 
 test("ready is a muted status for a terminal session with no prompt yet", () => {
@@ -396,7 +355,9 @@ test("ready is a muted status for a terminal session with no prompt yet", () => 
   assert.equal(Model.statusTone("ready"), "muted")
   const now = 1_000_000_000
   assert.equal(Model.rowSubtitle({ status: "ready", startedAt: now - 5000 }, now), "Ready · just now")
-  assert.equal(Model.overallStatus([{ status: "ready" }]), "idle")
+  // Deciding the bar word from the records is bin/voxclaude's job now
+  // (STATUS_FILTER); this side just never lists an untitled ready row.
+  assert.deepEqual(Model.visibleSessions([{ status: "ready", prompt: "" }]), [])
 })
 
 test("kindGlyph tells terminal rows from voice rows", () => {
@@ -410,8 +371,13 @@ test("litCount counts lit cells without building a list of them", () => {
   assert.equal(Model.litCount([".X.", "XX."]), 3)
   assert.equal(Model.litCount([]), 0)
   assert.equal(Model.litCount(null), 0)
+  // Counted independently here, so the two never agree by sharing a bug.
+  const byHand = frame => frame.reduce(
+    (n, row) => n + row.split("").filter(ch => ch !== "." && ch !== " ").length, 0)
   for (const name of Object.keys(Model.SPRITE_FRAMES)) {
-    assert.equal(Model.litCount(Model.SPRITE_FRAMES[name]),
-                 Model.spritePixels(Model.SPRITE_FRAMES[name]).length, name)
+    assert.equal(Model.litCount(Model.SPRITE_FRAMES[name]), byHand(Model.SPRITE_FRAMES[name]), name)
+  }
+  for (const name of Object.keys(Model.LAPTOP_FRAMES)) {
+    assert.equal(Model.litCount(Model.LAPTOP_FRAMES[name]), byHand(Model.LAPTOP_FRAMES[name]), name)
   }
 })

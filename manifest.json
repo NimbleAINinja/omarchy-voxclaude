@@ -5,6 +5,8 @@
   "version": "0.1.0",
   "author": "hydrox",
   "license": "MIT",
+  "homepage": "https://github.com/NimbleAINinja/omarchy-voxclaude",
+  "repository": "https://github.com/NimbleAINinja/omarchy-voxclaude",
   "description": "Hold a key, say what you want, and Claude Code does it in the background. A terminal opens only when you ask for one or Claude needs you.",
   "keywords": [
     "claude",

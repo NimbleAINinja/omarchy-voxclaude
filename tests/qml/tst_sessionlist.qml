@@ -79,8 +79,8 @@ TestCase {
     compare(list.rowAt(0).chipCount, 0)
     compare(list.rowAt(1).subtitleText, "Done · 50m ago")
     compare(list.rowAt(1).replyText, "Built it. Open http://localhost:5173/ to see it.")
-    // Turning that reply into prose is bin/voxclaude's job, checked there and
-    // in Model.plainText's own tests; see test_reply_is_shown_as_stored.
+    // Turning that reply into prose is bin/voxclaude's job, checked there;
+    // see test_reply_is_shown_as_stored.
     compare(list.rowAt(1).chipCount, 2)
     compare(list.rowAt(1).chipAt(0).label, "localhost:5173")
   }

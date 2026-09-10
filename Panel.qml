@@ -47,19 +47,31 @@ Panel {
   readonly property color laptopBody: "#d87050"
   readonly property var laptopPalette: ({ S: "#b86848", E: "#000000", L: "#888888" })
 
-  readonly property var look: Model.glyphFor(status)
+  readonly property bool alert: Model.statusTone(status) === "alert"
   readonly property color spriteColor: finishing ? blinkColor
-                                     : look.urgent ? urgent : foreground
-  // SessionList has already sorted them; sorting the same array again here
-  // just to read its head is work for nothing.
-  readonly property var latest: list.count > 0 ? list.rows[0] : null
+                                     : alert ? urgent : foreground
+  // The session the bar word is about, which need not be the top row: the
+  // word is the most urgent across every record. SessionList has already
+  // sorted them, so this walks them in the order the list shows.
+  readonly property var described: Model.sessionForStatus(list.rows, status)
   readonly property string tooltip: {
     var text = Model.statusLabel(status, keybind)
-    if (latest && status !== "idle") {
-      text += "\n" + Model.excerpt(latest.prompt, 80)
-      if (latest.step) text += "\n" + Model.excerpt(latest.step, 80)
+    if (described) {
+      text += "\n" + Model.excerpt(described.prompt, 80)
+      // rowStep, not .step: a finished session keeps the last step it ran.
+      var step = Model.rowStep(described)
+      if (step) text += "\n" + Model.excerpt(step, 80)
     }
     return text
+  }
+  // Saying "terminal" is a setting, so the popover must not name a word the
+  // user may have switched off. Empty means no word opens a window at all.
+  readonly property string terminalWord: {
+    var words = String(setting("terminalWords", "terminal")).split(",")
+    for (var i = 0; i < words.length; i++) {
+      if (words[i].trim() !== "") return words[i].trim()
+    }
+    return ""
   }
 
   implicitWidth: button.implicitWidth
@@ -197,7 +209,7 @@ Panel {
     id: button
     anchors.fill: parent
     bar: root.bar
-    active: root.look.urgent
+    active: root.alert
     tooltipText: root.tooltip
     // The icon canvas is 16px; the critter is 9x8 cells in a 14x12 box
     // (1.5px cells on a 2x screen, 4/3 on 3x), close to the width of the
@@ -341,7 +353,8 @@ Panel {
         Text {
           textFormat: Text.PlainText
           width: parent.width
-          text: "Click a row to open it in a terminal, done or not. Chips open the result. Hover a row to pin it (p); right-click or Delete hides it. Say “terminal” to start Claude in a window instead."
+          text: "Click a row to open it in a terminal, done or not. Chips open the result. Hover a row to pin it (p); right-click or Delete hides it."
+                + (root.terminalWord ? " Say “" + root.terminalWord + "” to start Claude in a window instead." : "")
           color: root.dim
           font.family: root.fontFamily
           font.pixelSize: Style.font.caption

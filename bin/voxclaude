@@ -167,6 +167,12 @@ session_claude_pid() { # <shortId>
 # the background is still running (a build poll, a dev server) and will wake
 # it later. Those commands are shells sourcing a Claude "shell-snapshots"
 # file, spawned directly under the Claude process.
+#
+# That name is Claude Code's own, so this is the one place coupled to an
+# implementation detail. Matching every child instead would be worse: MCP
+# servers live under the same process for the whole session and would make
+# every turn report "waiting". If finished sessions ever stop reaching
+# "waiting", check what `pgrep -P <claude pid> -a` calls those shells now.
 has_background_tasks() { # <shortId>
   local pid; pid=$(session_claude_pid "$1") || return 1
   pgrep -P "$pid" -f 'shell-snapshots' >/dev/null 2>&1
@@ -392,7 +398,14 @@ list_json() { # [--with-status]
   if (( ${#good[@]} )); then jq "${flags[@]}" -s "$filter" "${good[@]}"; else printf '%s\n' "$empty"; fi
 }
 
-latest_session() { list_json | jq -r 'map(select(.hidden != true)) | .[0].shortId // empty'; }
+# The row the widget calls the latest: what it lists, in the order it lists
+# them. Mirrors Model.visibleSessions and Model.sortSessions, without which
+# "attach latest" reached the newest session by clock while the bar and its
+# tooltip were describing an older one that needs you.
+TOP_FILTER='map(select((.hidden != true or .status == "needs-input")
+      and (((.prompt // "") | test("\\S")) or .status == "needs-input")))
+  | sort_by([(if .status == "needs-input" then 0 else 1 end), (if .pinned then 0 else 1 end), -(.startedAt // 0)])'
+latest_session() { list_json | jq -r "$TOP_FILTER | .[0].shortId // empty"; }
 
 # A recording marker voxtype no longer honours (the release bind never fired
 # and the daemon went idle on its own) must not turn the next press into a stop.

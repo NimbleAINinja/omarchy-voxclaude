@@ -55,7 +55,9 @@ Built for the [Omarchy](https://omarchy.org) shell on top of
   (`systemctl --user status voxtype`). voxtype ≥ 1.0 is needed for
   `record start --file` and `record stop --wait`.
 - Claude Code CLI ≥ 2.1.260 (`claude --bg`, `claude attach`, session-scoped hooks).
-- `jq`, `uuidgen` (util-linux), all shipped with Omarchy.
+- `jq`, `flock` and `setsid` (util-linux), `pgrep` (procps), and `hyprctl`,
+  `xdg-open` and Omarchy's own `omarchy-notification-send` and
+  `omarchy-launch-tui`. All ship with Omarchy.
 
 ## Install
 
