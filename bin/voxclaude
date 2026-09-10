@@ -21,7 +21,7 @@
 #   voxclaude keybind            the key bound to start recording, e.g. Super+D
 #   voxclaude uninstall          undo everything it put outside this directory
 #
-# State lives in $XDG_RUNTIME_DIR/voxclaude: status (one word), recording
+# State lives in $XDG_RUNTIME_DIR/voxclaude (mode 0700): status (one word), recording
 # (marker while the key is held), prompt.txt (voxtype's transcript),
 # hooks.json (session-scoped Claude hooks), sessions/<shortId>.json and
 # sessions.json (the aggregated feed the bar widget watches).
@@ -35,7 +35,31 @@ VOICE_PROMPT="You were launched by voice from a desktop widget (VoxClaude). The 
 
 self=$(realpath "${BASH_SOURCE[0]}")
 plugin_dir=${self%/*/*}
-RT=${XDG_RUNTIME_DIR:-/tmp}/voxclaude
+
+# The state directory holds transcripts and session data, so it is never a
+# shared path. $XDG_RUNTIME_DIR is the per-user directory logind makes
+# (0700, owned by the user) and is used only when it really is that: a real
+# directory, not a symlink, owned by this UID. Otherwise the fallback is a
+# per-UID directory under $TMPDIR. Either way the directory is created with
+# mode 0700 and, when it already exists, checked to be a plain directory of
+# our own before anything is written: in a sticky /tmp another user can
+# pre-create a predictable path, or plant a symlink there, and read what is
+# written or redirect it. A directory that fails the check aborts the run.
+own_dir() { [[ -n $1 && -d $1 && ! -L $1 && -O $1 ]]; }
+private_dir() { # <path>: a 0700 directory owned by this user, never a symlink
+  mkdir -m 0700 "$1" 2>/dev/null && return 0
+  if ! own_dir "$1"; then
+    echo "voxclaude: refusing to use $1: it must be a directory owned by you, not a symlink" >&2
+    return 1
+  fi
+  chmod 0700 "$1"
+}
+if own_dir "${XDG_RUNTIME_DIR:-}"; then
+  RUNTIME_OK=1 RT=$XDG_RUNTIME_DIR/voxclaude
+else
+  RUNTIME_OK="" RT=${TMPDIR:-/tmp}/voxclaude-$UID
+fi
+private_dir "$RT" || exit 1
 SESSIONS=$RT/sessions
 PROMPT_FILE=$RT/prompt.txt
 MARKER=$RT/recording
@@ -410,8 +434,9 @@ latest_session() { list_json | jq -r "$TOP_FILTER | .[0].shortId // empty"; }
 # A recording marker voxtype no longer honours (the release bind never fired
 # and the daemon went idle on its own) must not turn the next press into a stop.
 clear_stale_marker() {
-  local vox_state="${XDG_RUNTIME_DIR:-/tmp}/voxtype/state" state=""
-  [[ -f $MARKER && -f $vox_state ]] || return 0
+  # voxtype's state file is only trusted inside the user's own runtime dir.
+  local vox_state="${XDG_RUNTIME_DIR:-}/voxtype/state" state=""
+  [[ -n $RUNTIME_OK && -f $MARKER && -f $vox_state ]] || return 0
   read -r state < "$vox_state" 2>/dev/null
   [[ $state == idle ]] || return 0
   rm -f "$MARKER"

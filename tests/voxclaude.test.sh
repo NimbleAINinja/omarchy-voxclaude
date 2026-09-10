@@ -813,6 +813,30 @@ check "uninstall does not edit the widget entry itself" bash -c "grep -q 'io.git
 rm -f "$HOME/.config/omarchy/shell.json"
 check "uninstall on a machine that never installed hooks is quiet" bash -c "'$script' uninstall 2>&1 | grep -q 'no hooks of ours'"
 
+# ---- runtime directory ------------------------------------------------------
+# State is private to the user: a 0700 directory, never a symlink or someone
+# else's, under $XDG_RUNTIME_DIR or (without one) a per-UID path in $TMPDIR.
+reset
+"$script" status >/dev/null
+check "state directory is mode 0700" test "$(stat -c %a "$RT")" = 700
+chmod 755 "$RT"
+"$script" status >/dev/null
+check "a state directory left open is tightened back to 0700" test "$(stat -c %a "$RT")" = 700
+fb="$tmp/fallback"; mkdir -p "$fb"
+fbdir="$fb/voxclaude-$UID"
+check "no XDG_RUNTIME_DIR -> per-UID directory under TMPDIR, not /tmp/voxclaude" \
+  bash -c "unset XDG_RUNTIME_DIR; TMPDIR='$fb' '$script' status >/dev/null && [[ -d '$fbdir' && \$(stat -c %a '$fbdir') == 700 ]]"
+check "an XDG_RUNTIME_DIR that is a symlink is not trusted" \
+  bash -c "rm -rf '$fbdir'; ln -s '$XDG_RUNTIME_DIR' '$fb/link'; XDG_RUNTIME_DIR='$fb/link' TMPDIR='$fb' '$script' status >/dev/null && [[ -d '$fbdir' ]]"
+rm -rf "$fbdir"; ln -s "$fb/elsewhere" "$fbdir"; mkdir -p "$fb/elsewhere"
+check "a symlink planted at the state path aborts the run" \
+  bash -c "out=\$( (unset XDG_RUNTIME_DIR; TMPDIR='$fb' '$script' status) 2>&1 ) && exit 1; grep -q refusing <<< \"\$out\""
+check "nothing is written through the planted symlink" test -z "$(ls -A "$fb/elsewhere")"
+rm -f "$fbdir"; touch "$fbdir"
+check "a plain file at the state path aborts the run" \
+  bash -c "! ( unset XDG_RUNTIME_DIR; TMPDIR='$fb' '$script' status ) >/dev/null 2>&1"
+rm -rf "$fb"
+
 # ---- status -----------------------------------------------------------------
 check "status prints idle when nothing is recorded" bash -c "rm -rf '$RT'; [[ \$('$script' status) == idle ]]"
 

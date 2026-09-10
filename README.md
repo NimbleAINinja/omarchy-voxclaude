@@ -179,7 +179,15 @@ Claude hooks   SessionStart       → voxclaude hook start       → record + wi
                SessionEnd          → voxclaude hook end         → unanswered sessions marked stopped
 ```
 
-`$RT` is `$XDG_RUNTIME_DIR/voxclaude`. It holds `status` (one word the widget
+`$RT` is `$XDG_RUNTIME_DIR/voxclaude`, created with mode `0700`. The runtime
+directory is trusted only when it is what logind provides: a real directory
+(not a symlink) owned by the current user. Without one the script falls back
+to `$TMPDIR/voxclaude-<uid>` (`/tmp` by default), created the same way, and
+in either case it refuses to run when the path already exists as a symlink,
+a file, or a directory owned by someone else, so transcripts and session
+records never go through a path another local user could have planted. The
+bar widget reads `$XDG_RUNTIME_DIR/voxclaude` only; the fallback is for the
+CLI outside a login session. `$RT` holds `status` (one word the widget
 watches), `sessions/<shortId>.json` (one record per session), `sessions.json`
 (all records, newest first, rewritten on every change and watched by the
 widget), `hooks.json` (the session-scoped Claude hooks) and voxtype's
