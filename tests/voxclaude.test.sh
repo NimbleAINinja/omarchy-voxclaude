@@ -746,6 +746,28 @@ check "racing hooks leave a record that still parses" bash -c "jq -e . '$RT/sess
 check "racing hooks leave no stray temp file" bash -c "! ls '$RT/sessions/'eeee9999.json.* >/dev/null 2>&1"
 check "racing hooks leave a feed that still parses" bash -c "jq -e 'type == \"array\"' '$RT/sessions.json' >/dev/null"
 
+# ---- uninstall ----------------------------------------------------------------
+# The hooks name this script by absolute path, so they have to come out before
+# the directory does, or every session on the machine runs a missing command.
+reset
+"$script" hooks install >/dev/null 2>&1 || true
+jq '.hooks.PreToolUse += [{hooks:[{type:"command",command:"someone-elses-hook"}]}] | .theme = "dark"' \
+  "$HOME/.claude/settings.json" > "$tmp/s" && mv "$tmp/s" "$HOME/.claude/settings.json"
+VOXTYPE_TEXT="do a thing" "$script" stop
+echo '{"bar":{"layout":{"right":[{"id":"io.github.nimbleaininja.voxclaude"},{"id":"other.widget"}]}}}' \
+  > "$HOME/.config/omarchy/shell.json"
+out=$("$script" uninstall 2>&1)
+check "uninstall takes our hooks back out" bash -c "! jq -e --arg s '$script' '[(.hooks // {})[]?[]?.hooks[]?.command // \"\" | select(startswith(\$s))] | length > 0' '$HOME/.claude/settings.json' >/dev/null"
+check "uninstall leaves other people's hooks alone" bash -c "jq -e '[(.hooks // {})[]?[]?.hooks[]?.command] | any(. == \"someone-elses-hook\")' '$HOME/.claude/settings.json' >/dev/null"
+check "uninstall leaves the rest of the settings alone" bash -c "jq -e '.theme == \"dark\"' '$HOME/.claude/settings.json' >/dev/null"
+check "uninstall clears the runtime state" test ! -d "$RT"
+check "uninstall names the config files it will not touch" bash -c "grep -q 'yours to edit' <<< \"\$0\"" "$out"
+check "uninstall says how to remove the plugin" bash -c "grep -q 'omarchy plugin remove io.github.nimbleaininja.voxclaude' <<< \"\$0\"" "$out"
+check "uninstall points at the widget entry it will not touch" bash -c "grep -q 'shell.json' <<< \"\$0\"" "$out"
+check "uninstall does not edit the widget entry itself" bash -c "grep -q 'io.github.nimbleaininja.voxclaude' '$HOME/.config/omarchy/shell.json'"
+rm -f "$HOME/.config/omarchy/shell.json"
+check "uninstall on a machine that never installed hooks is quiet" bash -c "'$script' uninstall 2>&1 | grep -q 'no hooks of ours'"
+
 # ---- status -----------------------------------------------------------------
 check "status prints idle when nothing is recorded" bash -c "rm -rf '$RT'; [[ \$('$script' status) == idle ]]"
 

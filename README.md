@@ -215,6 +215,42 @@ Findings from the CLI this was built against (Claude Code 2.1.266):
 - If your home directory path contains spaces, the hook commands in
   `hooks.json` need quoting; open an issue.
 
+## Removing it
+
+VoxClaude puts three things outside its own directory: hooks in
+`~/.claude/settings.json` if you ran `hooks install`, a widget entry in
+`shell.json`, and the binds and window rules in your Hyprland config. Run this
+first, while the plugin is still there:
+
+```bash
+~/.config/omarchy/plugins/io.github.nimbleaininja.voxclaude/bin/voxclaude uninstall
+```
+
+It takes its own hooks back out of `~/.claude/settings.json`, leaving anything
+else in there untouched, and clears the runtime state. That has to happen
+before the directory goes: those hooks name the script by absolute path, and
+left behind they would make every Claude Code session on the machine run a
+command that is not there, once per tool call.
+
+It then prints the lines to delete from your own config files, with line
+numbers, and leaves them to you:
+
+- the `io.github.nimbleaininja.voxclaude` entry in a `bar.layout` section of
+  `~/.config/omarchy/shell.json` (or Omarchy menu → Setup → Bar)
+- the two `o.bind` lines in `~/.config/hypr/bindings.lua`
+- the three `o.window` rules for `org.omarchy.voxclaude` in
+  `~/.config/hypr/hyprland.lua`
+
+Then remove the plugin and reload:
+
+```bash
+omarchy plugin remove io.github.nimbleaininja.voxclaude   # or: rm -rf the directory
+hyprctl reload && omarchy restart shell
+```
+
+Nothing else is left: session records live only in `$XDG_RUNTIME_DIR`, and
+voxtype is never reconfigured, so plain dictation on its own key is unaffected.
+
 ## Development
 
 ```bash

@@ -10,7 +10,7 @@
 #   voxclaude hook tool          Claude Code PreToolUse hook (stdin JSON): progress line
 #   voxclaude hook prompt        Claude Code UserPromptSubmit hook: session is busy again
 #   voxclaude open <url|path>    open a result with xdg-open
-#   voxclaude forget <id>        drop a session record (and the background session)
+#   voxclaude forget <id>        hide a session's row (the session keeps running)
 #   voxclaude pin <id>           toggle a record's pin (kept at the top, never pruned)
 #   voxclaude hook start         Claude Code SessionStart hook: track terminal sessions
 #   voxclaude hooks install      put the hooks in ~/.claude/settings.json (all sessions)
@@ -19,6 +19,7 @@
 #   voxclaude list --json        session records as a JSON array
 #   voxclaude status             current bar status word
 #   voxclaude keybind            the key bound to start recording, e.g. Super+D
+#   voxclaude uninstall          undo everything it put outside this directory
 #
 # State lives in $XDG_RUNTIME_DIR/voxclaude: status (one word), recording
 # (marker while the key is held), prompt.txt (voxtype's transcript),
@@ -1008,6 +1009,42 @@ cmd_keybind() {
   return 0
 }
 
+# Undo what the plugin put outside its own directory, and point at what is
+# left. The hooks name this script by absolute path, so they have to go before
+# the directory does: left behind, every Claude Code session on the machine
+# would run a command that is no longer there, once per tool call.
+cmd_uninstall() {
+  local file hits found=0
+  if [[ -f $SETTINGS ]] && global_hooks_installed; then
+    cmd_hooks uninstall || return 1
+  else
+    echo "voxclaude: no hooks of ours in $SETTINGS"
+  fi
+  rm -rf "$RT"
+  echo "voxclaude: runtime state cleared"
+  for file in "$HOME/.config/omarchy/shell.json" "$HOME/.config/hypr"/*.lua \
+              "$HOME/.config/hypr"/*.conf "$HOME/.config/hypr"/bindings/*.conf; do
+    [[ -f $file ]] || continue
+    hits=$(grep -n -E 'voxclaude|org\.omarchy\.voxclaude' "$file" 2>/dev/null) || continue
+    [[ -n $hits ]] || continue
+    if (( ! found )); then
+      found=1
+      printf '\nThese are yours to edit, so they are left alone. Delete these lines:\n'
+    fi
+    printf '\n  %s\n' "$file"
+    sed 's/^/    /' <<< "$hits"
+  done
+  cat <<EOF
+
+Then remove the plugin itself:
+  omarchy plugin remove $PLUGIN_ID
+or, if you cloned it by hand:
+  rm -rf "$plugin_dir"
+
+And reload: hyprctl reload && omarchy restart shell
+EOF
+}
+
 cmd_status() {
   local word; word=$(cat "$STATUS_FILE" 2>/dev/null); word=${word//[[:space:]]/}
   printf '%s\n' "${word:-idle}"
@@ -1034,6 +1071,7 @@ case ${1:-} in
   hooks) cmd_hooks "${2:-status}" ;;
   list) list_json ;;
   keybind) cmd_keybind ;;
+  uninstall) cmd_uninstall ;;
   status) cmd_status ;;
   *) sed -n -e '2p' -e '/^#   voxclaude/p' "$self" | sed 's/^# \{0,1\}//'; exit 1 ;;
 esac
