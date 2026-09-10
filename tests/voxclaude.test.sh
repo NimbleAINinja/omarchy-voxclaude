@@ -141,6 +141,30 @@ check "extra trigger words still honour the settings" called $'^claude\t'"$HOME/
 reset; "$script" start; : > "$LOG"; VOXTYPE_TEXT="plain task" "$script" stop
 check "waitSeconds setting reaches voxtype" called $'record stop --wait --timeout 25'
 check "cwd and permissionMode settings reach claude" called $'claude\t'"$HOME/Proj"$'\t--bg .*--permission-mode acceptEdits'
+# A field cleared in the settings UI arrives as "". Splitting on a whitespace
+# separator folded it away and shifted every later setting into the wrong
+# variable, which emptied the timeout and made voxtype reject every stop.
+cat > "$HOME/.config/omarchy/shell.json" <<JSON
+{"bar":{"layout":{"right":[{"id":"io.github.nimbleaininja.voxclaude","terminalWords":"","waitSeconds":25}]}}}
+JSON
+reset; "$script" start; : > "$LOG"; VOXTYPE_TEXT="open a terminal please" "$script" stop
+check "a cleared setting does not shift the ones after it" called $'record stop --wait --timeout 25'
+check "cleared trigger words simply never match" not_called 'claude attach'
+cat > "$HOME/.config/omarchy/shell.json" <<JSON
+{"bar":{"layout":{"right":[{"id":"io.github.nimbleaininja.voxclaude","cwd":"","permissionMode":""}]}}}
+JSON
+reset; VOXTYPE_TEXT="plain task" "$script" stop
+check "a cleared setting falls back instead of poisoning the next one" called $'claude	'"$HOME"$'	--bg .*--permission-mode auto'
+rm "$HOME/.config/omarchy/shell.json"
+
+# The shipped default working directory need not exist on this machine.
+cat > "$HOME/.config/omarchy/shell.json" <<JSON
+{"bar":{"layout":{"right":[{"id":"io.github.nimbleaininja.voxclaude","cwd":"~/NoSuchPlace"}]}}}
+JSON
+reset; VOXTYPE_TEXT="plain task" "$script" stop
+check "a working directory that is not there falls back to home" called $'claude	'"$HOME"$'	--bg '
+check "a missing working directory still starts a session" bash -c "jq -e '.status == \"thinking\"' '$RT/sessions/abcd1234.json' >/dev/null"
+check "a missing working directory is not reported as a failure" not_called 'Claude did not start'
 rm "$HOME/.config/omarchy/shell.json"
 
 # ---- hooks ----------------------------------------------------------------
@@ -149,6 +173,12 @@ echo '{"session_id":"abcd1234-0000-4000-8000-000000000000","hook_event_name":"No
 check "needs-input attaches a terminal to the session" called $'omarchy-launch-or-focus-tui\t.*\t--app-id=org.omarchy.voxclaude.abcd1234 claude attach abcd1234'
 check "needs-input marks the session" bash -c "jq -e '.status == \"needs-input\"' '$RT/sessions/abcd1234.json' >/dev/null"
 check "needs-input sets the bar status" test "$(status)" = needs-input
+# Answering the prompt fires no hook of its own, but a tool call cannot run
+# until it is answered, so the next one means the session is working again.
+printf '{"session_id":"abcd1234-0000-4000-8000-000000000000","hook_event_name":"PreToolUse","tool_name":"Edit","tool_input":{"file_path":"/x/App.jsx"}}' | "$script" hook tool
+check "a tool call after you answer clears needs-input" bash -c "jq -e '.status == \"thinking\"' '$RT/sessions/abcd1234.json' >/dev/null"
+check "the bar stops asking for you once the session works again" test "$(status)" = thinking
+echo '{"session_id":"abcd1234-0000-4000-8000-000000000000","hook_event_name":"Notification","notification_type":"permission_prompt"}' | "$script" hook needs-input
 
 : > "$LOG"
 echo '{"session_id":"ffffffff-0000-4000-8000-000000000000","hook_event_name":"Notification","notification_type":"permission_prompt"}' | "$script" hook needs-input
@@ -264,11 +294,15 @@ check "prune drops old unpinned records" test ! -f "$RT/sessions/abcd1234.json"
 reset; VOXTYPE_TEXT="do a thing" "$script" stop
 printf '%s' '{"session_id":"abcd1234-0000-4000-8000-000000000000","hook_event_name":"Stop","last_assistant_message":"all done"}' | "$script" hook stop
 
-# ---- forget -------------------------------------------------------------------
+# ---- forget hides a row, and does nothing else --------------------------------
 : > "$LOG"; "$script" forget abcd1234
-check "forget removes the record" test ! -f "$RT/sessions/abcd1234.json"
-check "forget removes the background session" called $'claude\t.*\trm abcd1234'
-check "forget updates the feed" bash -c "jq -e 'length == 0' '$RT/sessions.json' >/dev/null"
+check "forget hides the row" bash -c "jq -e '.hidden == true' '$RT/sessions/abcd1234.json' >/dev/null"
+check "forget keeps the record" test -f "$RT/sessions/abcd1234.json"
+check "forget never deletes the claude session" not_called $'claude\t.*\trm abcd1234'
+check "forget leaves the rest of the record alone" bash -c "jq -e '.prompt == \"do a thing\" and .status == \"done\"' '$RT/sessions/abcd1234.json' >/dev/null"
+check "forget updates the feed" bash -c "jq -e '.[0].hidden == true' '$RT/sessions.json' >/dev/null"
+: > "$LOG"; "$script" attach latest >/dev/null 2>&1 || true
+check "attach latest passes over a hidden row" not_called 'claude attach'
 reset; VOXTYPE_TEXT="do a thing" "$script" stop
 printf '%s' '{"session_id":"abcd1234-0000-4000-8000-000000000000","hook_event_name":"Stop","last_assistant_message":"all done"}' | "$script" hook stop
 
@@ -397,6 +431,23 @@ check "a sentence that only starts with no is kept" \
      = 'No file was found in the URL list, so I created config.yaml at ~/Work/config.yaml.'
 check "a reply that is nothing but the note still says something" \
   test "$(reply_after 'No file or URL for this one.')" = 'No file or URL for this one.'
+# The note is only ever a bare absence with filler after it. An answer that
+# happens to be negative says what happened, and must survive whole.
+check "an answer that is itself a negative result is kept" \
+  test "$(reply_after 'Searched the log. No results found for timeout.')" \
+     = 'Searched the log. No results found for timeout.'
+check "a negative answer about a path is kept" \
+  test "$(reply_after 'Checked the config. No path is set for the cache.')" \
+     = 'Checked the config. No path is set for the cache.'
+check "a negative answer about files is kept" \
+  test "$(reply_after 'Bumped the version. No files changed outside src.')" \
+     = 'Bumped the version. No files changed outside src.'
+check "a negative answer about output is kept" \
+  test "$(reply_after 'The build is clean. No output was produced.')" = 'The build is clean. No output was produced.'
+check "the note is still dropped when it is only filler" \
+  test "$(reply_after 'Sorted. No output file this time.')" = 'Sorted.'
+check "a nothing-to-open note is dropped too" \
+  test "$(reply_after 'Done. Nothing to open here.')" = 'Done.'
 
 # ---- recording states are not clobbered -------------------------------------------
 reset; VOXTYPE_TEXT="do a thing" "$script" stop
@@ -405,7 +456,79 @@ check "recording sets listening" test "$(status)" = listening
 printf '{"session_id":"abcd1234-0000-4000-8000-000000000000","hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"description":"noise"}}' | "$script" hook tool
 check "another session's hook does not cancel listening" test "$(status)" = listening
 VOXTYPE_STOP_EXIT=3 "$script" stop
-check "nothing heard returns to idle" test "$(status)" = idle
+check "nothing heard hands the bar back to the sessions" test "$(status)" = thinking
+reset
+VOXTYPE_STOP_EXIT=3 "$script" stop
+check "nothing heard with no sessions is idle" test "$(status)" = idle
+
+# A session waiting on the user must survive a press that hears nothing: the
+# bar used to be forced to idle and the alert was lost until its next hook.
+reset; VOXTYPE_TEXT="do a thing" "$script" stop
+echo '{"session_id":"abcd1234-0000-4000-8000-000000000000","hook_event_name":"Notification","notification_type":"permission_prompt"}' | "$script" hook needs-input
+VOXTYPE_STOP_EXIT=3 "$script" stop
+check "nothing heard does not erase a session waiting on you" test "$(status)" = needs-input
+
+# voxtype gave up on its own: the marker goes, and so must the word, or
+# apply_status preserves "listening" and no hook can move the bar again.
+reset; "$script" start
+mkdir -p "$XDG_RUNTIME_DIR/voxtype"; echo idle > "$XDG_RUNTIME_DIR/voxtype/state"
+printf '{"session_id":"abcd1234-0000-4000-8000-000000000000","hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"description":"x"}}' | "$script" hook tool
+check "a recording voxtype has abandoned stops holding the bar" test "$(status)" != listening
+rm -rf "$XDG_RUNTIME_DIR/voxtype"
+
+# ---- an abandoned session stops holding the bar -----------------------------------
+# Interrupting a turn fires neither Stop nor SessionEnd, so the record used to
+# sit on "thinking" until the 24-hour prune and pinned the whole bar there.
+reset; VOXTYPE_TEXT="do a thing" "$script" stop
+bash -c 'exit 0' & dead=$!; wait $dead 2>/dev/null
+now=$(date +%s%3N)
+jq --argjson pid "$dead" --argjson old "$((now - 200000))" \
+  '.pid = $pid | .status = "thinking" | .updatedAt = $old' "$RT/sessions/abcd1234.json" > "$tmp/rec" \
+  && mv "$tmp/rec" "$RT/sessions/abcd1234.json"
+printf '{"session_id":"ffff1234-0000-4000-8000-000000000000","hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"description":"elsewhere"}}' | "$script" hook tool || true
+check "a session whose claude is gone is marked stopped" bash -c "jq -e '.status == \"stopped\"' '$RT/sessions/abcd1234.json' >/dev/null"
+check "an abandoned session keeps its prompt" bash -c "jq -e '.prompt == \"do a thing\"' '$RT/sessions/abcd1234.json' >/dev/null"
+# With the session that did the reaping gone, the abandoned one is all that is
+# left, and it must no longer hold the bar on "working".
+rm -f "$RT/sessions/ffff1234.json"
+"$script" pin abcd1234
+check "an abandoned session stops holding the bar on working" test "$(status)" = idle
+
+# Interrupting a turn leaves the process alive, so the pid says nothing: the
+# record sat on "thinking" for as long as the terminal stayed open.
+reset; VOXTYPE_TEXT="do a thing" "$script" stop
+now=$(date +%s%3N)
+jq --argjson pid "$$" --argjson old "$((now - 1000000))" \
+  '.pid = $pid | .status = "thinking" | .updatedAt = $old' "$RT/sessions/abcd1234.json" > "$tmp/rec" \
+  && mv "$tmp/rec" "$RT/sessions/abcd1234.json"
+printf '{"session_id":"ffff1234-0000-4000-8000-000000000000","hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"description":"elsewhere"}}' | "$script" hook tool || true
+check "an interrupted turn stops claiming to be working" bash -c "jq -e '.status == \"stopped\"' '$RT/sessions/abcd1234.json' >/dev/null"
+
+# A session waiting on you may sit there for hours: it is not abandoned.
+reset; VOXTYPE_TEXT="do a thing" "$script" stop
+now=$(date +%s%3N)
+jq --argjson pid "$$" --argjson old "$((now - 1000000))" \
+  '.pid = $pid | .status = "needs-input" | .updatedAt = $old' "$RT/sessions/abcd1234.json" > "$tmp/rec" \
+  && mv "$tmp/rec" "$RT/sessions/abcd1234.json"
+printf '{"session_id":"ffff1234-0000-4000-8000-000000000000","hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"description":"elsewhere"}}' | "$script" hook tool || true
+check "a long wait on you is never reaped" bash -c "jq -e '.status == \"needs-input\"' '$RT/sessions/abcd1234.json' >/dev/null"
+
+# A live session must never be reaped, however quiet it has been.
+reset; VOXTYPE_TEXT="do a thing" "$script" stop
+now=$(date +%s%3N)
+jq --argjson pid "$$" --argjson old "$((now - 200000))" \
+  '.pid = $pid | .status = "thinking" | .updatedAt = $old' "$RT/sessions/abcd1234.json" > "$tmp/rec" \
+  && mv "$tmp/rec" "$RT/sessions/abcd1234.json"
+printf '{"session_id":"ffff1234-0000-4000-8000-000000000000","hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"description":"elsewhere"}}' | "$script" hook tool || true
+check "a quiet session with a live claude is left alone" bash -c "jq -e '.status == \"thinking\"' '$RT/sessions/abcd1234.json' >/dev/null"
+
+# A dead pid on a record that is still being updated is a stale pid, not a
+# dead session: reaping on that alone flip-flopped every row it touched.
+reset; VOXTYPE_TEXT="do a thing" "$script" stop
+bash -c 'exit 0' & dead=$!; wait $dead 2>/dev/null
+jq --argjson pid "$dead" '.pid = $pid' "$RT/sessions/abcd1234.json" > "$tmp/rec" && mv "$tmp/rec" "$RT/sessions/abcd1234.json"
+printf '{"session_id":"abcd1234-0000-4000-8000-000000000000","hook_event_name":"PreToolUse","tool_name":"Read","tool_input":{"file_path":"/x/a.md"}}' | "$script" hook tool || true
+check "a fresh record with a stale pid keeps working" bash -c "jq -e '.status == \"thinking\"' '$RT/sessions/abcd1234.json' >/dev/null"
 
 # ---- hooks install on a broken settings file --------------------------------------
 cp "$HOME/.claude/settings.json" "$tmp/settings.good"
@@ -477,13 +600,17 @@ check "pruning 20 stale records costs two jq, not one per record" test "$(wc -l 
 check "stale records are still pruned on the key" bash -c "! ls '$RT'/sessions/stale*.json >/dev/null 2>&1"
 VOXTYPE_STOP_EXIT=3 "$script" stop
 
-# ---- forgotten sessions stay forgotten ---------------------------------------------
+# ---- a hidden row stays hidden, but keeps working ----------------------------------
 reset; VOXTYPE_TEXT="do a thing" "$script" stop
 "$script" forget abcd1234; : > "$LOG"
 printf '%s' '{"session_id":"abcd1234-0000-4000-8000-000000000000","hook_event_name":"PreToolUse","tool_name":"Read","tool_input":{"file_path":"/x/y.md"}}' | "$script" hook tool || true
-check "a forgotten session does not come back on its next hook" test ! -f "$RT/sessions/abcd1234.json"
-check "a forgotten session's hooks never ask claude for the list" not_called $'claude\t.*\tagents'
-check "forget drops the record's lock file" test ! -f "$RT/sessions/.abcd1234.lock"
+check "a hidden session stays hidden through its next hook" bash -c "jq -e '.hidden == true' '$RT/sessions/abcd1234.json' >/dev/null"
+check "a hidden session keeps being tracked" bash -c "jq -e '.status == \"thinking\" and .step == \"Reading y.md\"' '$RT/sessions/abcd1234.json' >/dev/null"
+check "a hidden session's hooks never ask claude for the list" not_called $'claude\t.*\tagents'
+# Hidden and blocked out of sight is worse than an unwanted row, so needs-input
+# brings it back; visibleSessions is where that call lives.
+echo '{"session_id":"abcd1234-0000-4000-8000-000000000000","hook_event_name":"Notification","notification_type":"permission_prompt"}' | "$script" hook needs-input
+check "a hidden session still reports that it needs you" bash -c "jq -e '.status == \"needs-input\"' '$RT/sessions/abcd1234.json' >/dev/null"
 reset; VOXTYPE_TEXT="do a thing" "$script" stop
 jq '.shortId = "old00003"' "$RT/sessions/abcd1234.json" > "$RT/sessions/old00003.json"; : > "$RT/sessions/.old00003.lock"
 touch -d '2 days ago' "$RT/sessions/old00003.json" "$RT/sessions/.old00003.lock"; rm -f "$RT/.pruned"
@@ -565,7 +692,59 @@ CONF
 check "keybind reads a hyprland.conf-style bind too" test "$(keybind)" = "Super+Shift+F9"
 rm -f "$hypr_conf/bindings.conf"
 
+# A rebind that leaves the old line commented out used to win, because the
+# first matching line was taken whatever it was.
+cat > "$hypr_conf/bindings.lua" <<'LUA'
+local voxclaude = os.getenv("HOME") .. "/.config/omarchy/plugins/io.github.nimbleaininja.voxclaude/bin/voxclaude"
+-- o.bind("SUPER + D", "Talk to Claude (hold)", voxclaude .. " start")
+o.bind("SUPER + SHIFT + D", "Talk to Claude (hold)", voxclaude .. " start")
+o.bind("SUPER + SHIFT + D", "Talk to Claude (release)", voxclaude .. " stop", { release = true })
+LUA
+check "keybind ignores a commented-out bind" test "$(keybind "$lua_binds")" = "Super+Shift+D"
+
+# Wrapped over lines, the first quoted string on the matching line was " start",
+# so the widget told the user to hold a key called "Start".
+cat > "$hypr_conf/bindings.lua" <<'LUA'
+local voxclaude = os.getenv("HOME") .. "/.config/omarchy/plugins/io.github.nimbleaininja.voxclaude/bin/voxclaude"
+o.bind("SUPER + SHIFT + D", "Talk to Claude (hold)",
+       voxclaude .. " start")
+LUA
+check "keybind reads a bind wrapped over lines" test "$(keybind "$lua_binds")" = "Super+Shift+D"
+
+# The release bind may come first; only the press one names the hold key.
+cat > "$hypr_conf/bindings.lua" <<'LUA'
+local voxclaude = os.getenv("HOME") .. "/.config/omarchy/plugins/io.github.nimbleaininja.voxclaude/bin/voxclaude"
+o.bind("SUPER + ALT + K", "Talk to Claude (release)", voxclaude .. " stop", { release = true })
+o.bind("SUPER + ALT + K", "Talk to Claude (hold)", voxclaude .. " start")
+LUA
+check "keybind is not fooled by the release bind coming first" test "$(keybind "$lua_binds")" = "Super+Alt+K"
+rm -f "$hypr_conf/bindings.lua"
+
+# A stock hyprland.conf names its modifier through a variable, which used to be
+# dropped, leaving the widget telling the user to hold "D" on its own.
+cat > "$hypr_conf/bindings.conf" <<CONF
+# bind = SUPER, X, exec, $script start
+\$mainMod = SUPER
+bind = \$mainMod, D, exec, $script start
+bindr = \$mainMod, D, exec, $script stop
+CONF
+check "keybind expands a variable modifier" test "$(keybind)" = "Super+D"
+rm -f "$hypr_conf/bindings.conf"
+
 check "keybind says nothing when no key is bound" test -z "$(keybind)"
+
+# ---- two hooks on one new session ---------------------------------------------
+# Both bootstrap it, and they used to stage through the same "<short>.json.tmp",
+# splicing a record that never parsed again and froze the whole feed.
+reset
+for i in 1 2 3 4 5 6; do
+  printf '%s' "{\"session_id\":\"eeee9999-0000-4000-8000-000000000000\",\"hook_event_name\":\"PreToolUse\",\"cwd\":\"$PWD\",\"tool_name\":\"Read\",\"tool_input\":{\"file_path\":\"/x/a.md\"}}" \
+    | "$tmp/bin/claude" wrap "$script" hook tool >/dev/null 2>&1 &
+done
+wait
+check "racing hooks leave a record that still parses" bash -c "jq -e . '$RT/sessions/eeee9999.json' >/dev/null"
+check "racing hooks leave no stray temp file" bash -c "! ls '$RT/sessions/'eeee9999.json.* >/dev/null 2>&1"
+check "racing hooks leave a feed that still parses" bash -c "jq -e 'type == \"array\"' '$RT/sessions.json' >/dev/null"
 
 # ---- status -----------------------------------------------------------------
 check "status prints idle when nothing is recorded" bash -c "rm -rf '$RT'; [[ \$('$script' status) == idle ]]"

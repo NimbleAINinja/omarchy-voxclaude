@@ -122,15 +122,18 @@ function excerpt(text, max) {
 }
 
 // A terminal session gets its record at SessionStart and its title at the
-// first prompt, so a row with no prompt has nothing to say yet. One that
-// needs you is listed regardless: saying so is what the widget is for, and an
-// injected turn can reach that state without ever setting a title.
+// first prompt, so a row with no prompt has nothing to say yet. A row the user
+// hid is out too. One that needs you is listed regardless: saying so is what
+// the widget is for, an injected turn can reach that state without ever
+// setting a title, and a hidden session blocked on a prompt nobody can see
+// would wait for good.
 function visibleSessions(list) {
   var items = toList(list)
   if (!items) return []
   var out = []
   for (var i = 0; i < items.length; i++) {
     var s = items[i] || {}
+    if (s.status !== "needs-input" && s.hidden) continue
     if (String(s.prompt || "").trim() !== "" || s.status === "needs-input") out.push(items[i])
   }
   return out

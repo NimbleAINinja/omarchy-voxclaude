@@ -59,8 +59,18 @@ load_settings() {
     | ([$shell.bar.layout[]?[]? | select(type == "object" and .id == $id)] | first // {}) as $entry
     | ($manifest.barWidget.defaults // {}) as $defaults
     | ["cwd", "permissionMode", "terminalWords", "waitSeconds"]
-    | map(. as $k | ($entry[$k] // $defaults[$k] // "") | tostring) | join("\t")' "${files[@]}" 2>/dev/null)
-  IFS=$'\t' read -r S_CWD S_MODE S_WORDS S_WAIT <<< "$line"
+    | map(. as $k | ($entry[$k] // $defaults[$k] // "") | tostring) | join("\u001f")' "${files[@]}" 2>/dev/null)
+  # Unit separator, not tab: tab is IFS whitespace, so `read` folds a run of
+  # them into one and a single cleared field shifted every later setting along
+  # (clearing the trigger words emptied the timeout and broke every dictation).
+  IFS=$'\037' read -r S_CWD S_MODE S_WORDS S_WAIT <<< "$line"
+  # A field cleared in the settings UI arrives as "", which is not what the
+  # manifest default is for. Empty terminalWords is honoured - wants_terminal
+  # then never fires - but the other three have no sane empty. The literals
+  # mirror manifest.json, and stand in when it cannot be read at all.
+  [[ -n $S_CWD ]] || S_CWD=$HOME
+  [[ $S_MODE =~ ^(auto|acceptEdits|bypassPermissions|default)$ ]] || S_MODE=auto
+  [[ $S_WAIT =~ ^[1-9][0-9]*$ ]] || S_WAIT=60
   S_LOADED=1
 }
 
@@ -91,6 +101,45 @@ apply_status() { # <word computed from the records>
   [[ -n $1 && $1 != "$current" ]] || return 0
   set_status "$1"
 }
+
+# Capture is over: hand the bar back to whatever the records say. A bare
+# "idle" here would erase a session that is waiting on the user, and dropping
+# the recording marker without this left the bar wedged on "listening", which
+# apply_status is bound to preserve.
+release_status() {
+  local feed word
+  { IFS= read -r feed; IFS= read -r word; } < <(list_json --with-status)
+  [[ -n $word ]] && set_status "$word"
+  return 0
+}
+
+# A new turn means the session is working again: it had finished, been
+# stopped, been waiting on a background command it started, never started, or
+# been blocked on a prompt the user has since answered - a tool call cannot
+# run until they answer. Shared so the two hooks that revive cannot drift.
+REVIVE_FILTER='if .status == "done" or .status == "stopped" or .status == "waiting"
+       or .status == "ready" or .status == "needs-input" then .status = "thinking" else . end'
+
+# The sessions whose Claude ought to still be alive, as
+# "<shortId>:<pid>:<updatedAt>". Interrupting a turn fires neither Stop nor
+# SessionEnd, so without a liveness check the record sits on "thinking" until
+# the 24-hour prune and holds the bar - and every other session - there too.
+LIVE_FILTER='[.[] | select((.pid // 0) > 0 and (.status == "thinking" or .status == "waiting"
+       or .status == "needs-input")) | "\(.shortId):\(.pid):\(.updatedAt):\(.status)"] | join(" ")'
+
+# A working session fires a hook per tool call, so silence this long with no
+# process behind it is an abandoned record rather than a slow turn. A pid
+# alone is not enough: it can go stale while the session lives on, which is
+# why session_claude_pid re-asks the CLI when /proc has nothing.
+STALE_MS=90000
+
+# Interrupting a turn leaves the process alive and the record on "thinking"
+# with no hook to correct it, so quiet this long counts as abandoned even
+# though Claude is still there. It has to outlast the longest plausible single
+# tool call, since a slow build fires nothing between its start and the Stop.
+# Only "thinking" is subject to it: "waiting" and "needs-input" are states a
+# session is meant to sit in, one for hours if the user is away.
+ABANDON_MS=900000
 
 # The Claude process behind a session, via the session listing. Background
 # sessions carry a short id, interactive ones only the UUID, so match either.
@@ -141,7 +190,14 @@ plain_text() {
 # the absence of one too ("No file or URL for this one."), which is noise in a
 # toast. Drop that as a trailing sentence, never mid-reply, and only when
 # something is left to show.
-NO_RESULT_TAIL='^(there[[:space:]]*(is|.s|are)[[:space:]]+)?no[[:space:]]+([a-z]+[[:space:]]+)?(file|url|link|path|output|result)s?([[:space:]]*(or|and|,)[[:space:]]*(an?[[:space:]]+)?(file|url|link|path|output|result)s?)*([[:space:]][^.!?]*)?[.!?]?[[:space:]]*$'
+# Only a bare statement that there is no result counts, with nothing after it
+# but filler. The tail used to be any text at all, which ate answers whose
+# whole point was the absence: "No results found for timeout." lost the
+# sentence that answered the question. A verb means it is an answer.
+NO_RESULT_NOUN='(file|url|link|path|output|result|artifact)s?'
+NO_RESULT_THING="$NO_RESULT_NOUN([[:space:]]+$NO_RESULT_NOUN)?" # "no output file"
+NO_RESULT_FILLER='(for[[:space:]]+(this|it|that)([[:space:]]+one)?|here|this[[:space:]]+time|yet|to[[:space:]]+(open|show|share|report|look[[:space:]]+at|point[[:space:]]+(to|at)))'
+NO_RESULT_TAIL="^((there|there.s)[[:space:]]+(is|are)?[[:space:]]*)?(no|not[[:space:]]+any)[[:space:]]+(new[[:space:]]+)?(an?[[:space:]]+)?$NO_RESULT_THING([[:space:]]*(or|and|,)[[:space:]]*(an?[[:space:]]+)?$NO_RESULT_THING)*([[:space:]]+$NO_RESULT_FILLER)*[.!?]?[[:space:]]*\$|^nothing[[:space:]]+to[[:space:]]+(open|show|share|report|point[[:space:]]+(to|at))([[:space:]]+$NO_RESULT_FILLER)*[.!?]?[[:space:]]*\$"
 
 drop_no_result() { # <text>
   local text=$1 head tail prefix rest out=""
@@ -236,21 +292,78 @@ update_session() { # <shortId> <jq filter> [jq args...]
   return $rc
 }
 
+# Creating a record takes the same lock and private temp file as changing one.
+# Two hooks can reach a new session at once - SessionStart racing the first
+# UserPromptSubmit, or parallel first tool calls - and a shared ".tmp" path
+# splices their output into a record that never parses again.
+write_record() { # <shortId> <jq -n args...>
+  local short=$1 file lock rc; shift
+  file=$SESSIONS/$short.json
+  lock=$SESSIONS/.$short.lock
+  (
+    flock 9 2>/dev/null || true
+    tmp=$(mktemp "$file.XXXXXX") || exit 1
+    if jq -n "$@" > "$tmp" 2>/dev/null && [[ -s $tmp ]]; then
+      mv -f "$tmp" "$file"
+    else
+      rm -f "$tmp"
+      exit 1
+    fi
+  ) 9>"$lock"
+  rc=$?
+  write_feed
+  return $rc
+}
+
 # One file the widget can watch instead of polling: every record, newest
 # first. The same jq that sorts the records also decides the bar word, so a
 # hook pays for one pass over the set, not two. A word is only written when
 # one was actually computed: a damaged set must never blank the bar.
 write_feed() {
-  local out feed word
-  out=$(list_json --with-status) || return 1
-  feed=${out%$'\n'*}; word=${out##*$'\n'}
+  local feed word live
+  { IFS= read -r feed; IFS= read -r word; IFS= read -r live; } < <(list_json --with-status)
   [[ -n $feed && $feed != "$word" ]] || return 1
   (
     flock 9 2>/dev/null || true
     tmp=$(mktemp "$FEED_FILE.XXXXXX") || exit 1
     if printf '%s\n' "$feed" > "$tmp"; then mv -f "$tmp" "$FEED_FILE"; else rm -f "$tmp"; fi
   ) 9>"$RT/.feed.lock"
+  # Reaping rewrites records, which writes the feed again with the corrected
+  # word, so this word is stale when it happens: leave the bar to that pass.
+  reap_dead "${live:-}" || return 0
   apply_status "$word"
+}
+
+# Mark the sessions whose Claude is gone. /proc answers without a process
+# launch and the list only ever holds the few records in a running state, so
+# this costs nothing on the hook path. Returns 1 when it reaped, meaning the
+# feed and the bar were already rewritten from the corrected records.
+reap_dead() { # <"shortId:pid:updatedAt:status ...">
+  local entry short pid stamp state age now_ms dead=()
+  [[ -n ${1:-} && -z ${REAPING:-} ]] || return 0
+  now_ms=${EPOCHREALTIME/[.,]/}; now_ms=${now_ms:0:13}
+  for entry in $1; do
+    IFS=: read -r short pid stamp state <<< "$entry"
+    [[ $pid =~ ^[0-9]+$ && $stamp =~ ^[0-9]+$ ]] || continue
+    age=$((now_ms - stamp))
+    if [[ $pid != 0 && ! -d /proc/$pid ]]; then
+      (( age > STALE_MS )) && dead+=("$short")
+    elif [[ $state == thinking ]] && (( age > ABANDON_MS )); then
+      dead+=("$short")
+    fi
+  done
+  (( ${#dead[@]} )) || return 0
+  # A record this rewrites wrongly - a pid we never learned, a session the
+  # daemon outlived - heals itself: its next hook revives it to "thinking".
+  REAPING=1
+  for short in "${dead[@]}"; do
+    update_session "$short" --argjson now "$now_ms" '
+      .status = "stopped" | .step = ""
+      | .finishedAt = (if (.finishedAt // 0) > 0 then .finishedAt else $now end)
+      | .updatedAt = $now' >/dev/null 2>&1
+  done
+  REAPING=
+  return 1
 }
 
 # Bash 5 keeps the clock in a variable; `date` cost a process on every hook,
@@ -259,11 +372,12 @@ set_now() { NOW=${EPOCHREALTIME/[.,]/}; NOW=${NOW:0:13}; }
 
 # Records that do not parse are skipped rather than failing the whole listing:
 # one damaged file must not freeze the widget's feed or blank the bar.
-# --with-status prints the array on one line and the bar word on the next.
+# --with-status prints the array on one line, the bar word on the next, and
+# the sessions to check for liveness on a third.
 list_json() { # [--with-status]
   local files=() good=() f out filter='sort_by(-.startedAt)' flags=(-r) empty='[]'
   if [[ ${1:-} == --with-status ]]; then
-    filter="sort_by(-.startedAt) | ., ($STATUS_FILTER)"; flags=(-r -c); empty=$'[]\nidle'
+    filter="sort_by(-.startedAt) | ., ($STATUS_FILTER), ($LIVE_FILTER)"; flags=(-r -c); empty=$'[]\nidle\n'
   fi
   shopt -s nullglob; files=("$SESSIONS"/*.json); shopt -u nullglob
   (( ${#files[@]} )) || { printf '%s\n' "$empty"; return; }
@@ -277,7 +391,7 @@ list_json() { # [--with-status]
   if (( ${#good[@]} )); then jq "${flags[@]}" -s "$filter" "${good[@]}"; else printf '%s\n' "$empty"; fi
 }
 
-latest_session() { list_json | jq -r '.[0].shortId // empty'; }
+latest_session() { list_json | jq -r 'map(select(.hidden != true)) | .[0].shortId // empty'; }
 
 # A recording marker voxtype no longer honours (the release bind never fired
 # and the daemon went idle on its own) must not turn the next press into a stop.
@@ -285,7 +399,12 @@ clear_stale_marker() {
   local vox_state="${XDG_RUNTIME_DIR:-/tmp}/voxtype/state" state=""
   [[ -f $MARKER && -f $vox_state ]] || return 0
   read -r state < "$vox_state" 2>/dev/null
-  [[ $state == idle ]] && rm -f "$MARKER"
+  [[ $state == idle ]] || return 0
+  rm -f "$MARKER"
+  # The marker is gone but "listening" is still on the bar, and apply_status
+  # will not overwrite a capture word, so without this every later hook's
+  # status update is discarded and the bar stays there until the next press.
+  release_status
 }
 
 # Drop day-old unpinned records, their locks, and stale untracked markers.
@@ -398,12 +517,10 @@ bootstrap_record() { # <sessionId> <cwd>
     pid=$apid
   fi
   window=$(find_window || echo null)
-  jq -n --arg short "$short" --arg uuid "$sid" --arg cwd "$cwd" --arg kind "$kind" --argjson window "$window" \
-    --argjson pid "${pid:-0}" --argjson now "$NOW" \
+  write_record "$short" --arg short "$short" --arg uuid "$sid" --arg cwd "$cwd" --arg kind "$kind" \
+    --argjson window "$window" --argjson pid "${pid:-0}" --argjson now "$NOW" \
     '{ shortId: $short, sessionId: $uuid, prompt: "", cwd: $cwd, startedAt: $now, updatedAt: $now, finishedAt: 0,
-       status: "ready", step: "", reply: "", results: [], pinned: false, kind: $kind, window: $window, pid: $pid }' \
-    > "$(session_file "$short").tmp" && mv -f "$(session_file "$short").tmp" "$(session_file "$short")"
-  write_feed
+       status: "ready", step: "", reply: "", results: [], pinned: false, hidden: false, kind: $kind, window: $window, pid: $pid }'
 }
 
 # Read the hook payload on stdin; sets $short, $sid and $payload. A session
@@ -492,16 +609,19 @@ cmd_stop() {
   rc=$?
   case $rc in
     0) cmd_dispatch "$text" ;;
-    3) set_status idle; notify -u low -t 2500 "Nothing heard" ;;
+    3) release_status; notify -u low -t 2500 "Nothing heard" ;;
     *) set_status error; notify -u critical -t 5000 "Transcription failed" "$(head -1 "$RT/stderr" 2>/dev/null)"; return 1 ;;
   esac
 }
 
 cmd_dispatch() {
   local text=$1 cwd mode watched=0
-  [[ -n ${text//[[:space:]]/} ]] || { set_status idle; return; }
+  [[ -n ${text//[[:space:]]/} ]] || { release_status; return; }
   load_settings; set_now
   cwd=${S_CWD/#\~/$HOME}
+  # The shipped default is ~/Work, which need not exist on this machine.
+  # Starting in the home directory beats refusing to run, as cmd_attach found.
+  [[ -d $cwd ]] || cwd=$HOME
   mode=$S_MODE
 
   # Asking for a terminal opens a window on the session, not a Claude inside
@@ -518,8 +638,11 @@ cmd_dispatch() {
   # open on it, somebody can.
   (( watched )) || prompt_args=(--append-system-prompt "$VOICE_PROMPT")
   local out short
-  out=$(cd "$cwd" && claude --bg --name "voice: $(excerpt "$text" 40)" "${settings_args[@]}" \
-        --permission-mode "$mode" "${prompt_args[@]}" -- "$text" 2>&1 </dev/null)
+  # The redirect wraps the whole subshell: on claude alone, a working
+  # directory that could not be entered went to this script's stderr and the
+  # failure toast below reported it with an empty body.
+  out=$( { cd "$cwd" && claude --bg --name "voice: $(excerpt "$text" 40)" "${settings_args[@]}" \
+        --permission-mode "$mode" "${prompt_args[@]}" -- "$text"; } 2>&1 </dev/null)
   short=$(grep -oiE 'backgrounded[^0-9a-f]*[0-9a-f]{6,}' <<< "$out" | grep -oE '[0-9a-f]{6,}$' | head -1)
   if [[ -z $short ]]; then
     set_status error
@@ -535,12 +658,10 @@ cmd_dispatch() {
        '.prompt = $prompt | .cwd = $cwd | .kind = "voice" | .status = "thinking" | .startedAt = $now | .updatedAt = $now'; then
     :
   else
-    jq -n --arg short "$short" --arg prompt "$text" --arg cwd "$cwd" --argjson now "$NOW" \
+    write_record "$short" --arg short "$short" --arg prompt "$text" --arg cwd "$cwd" --argjson now "$NOW" \
       '{ shortId: $short, sessionId: "", prompt: $prompt, cwd: $cwd, startedAt: $now, updatedAt: $now,
-         finishedAt: 0, status: "thinking", step: "", reply: "", results: [], pinned: false, kind: "voice",
-         window: null, pid: 0 }' \
-      > "$SESSIONS/$short.json.tmp" && mv -f "$SESSIONS/$short.json.tmp" "$SESSIONS/$short.json"
-    write_feed
+         finishedAt: 0, status: "thinking", step: "", reply: "", results: [], pinned: false, hidden: false,
+         kind: "voice", window: null, pid: 0 }'
   fi
   set_status thinking
   # A window opening is announcement enough; a toast on top of it is noise.
@@ -645,7 +766,7 @@ cmd_hook_tool() {
        elif $t == "AskUserQuestion" then "Asking you a question"
        else "Using " + $t end | excerpt(80)) as $step
     | .step = $step | .updatedAt = $now
-    | if .status == "done" or .status == "stopped" or .status == "waiting" or .status == "ready" then .status = "thinking" else . end'
+    | '"$REVIVE_FILTER"
 }
 
 # UserPromptSubmit: the user (or a background-task notification) started a
@@ -660,7 +781,7 @@ cmd_hook_prompt() {
   update_session "$short" --arg title "$title" --argjson now "$NOW" \
     '.step = "" | .updatedAt = $now
      | if .prompt == "" and $title != "" then .prompt = $title else . end
-     | if .status == "done" or .status == "stopped" or .status == "waiting" or .status == "ready" then .status = "thinking" else . end'
+     | '"$REVIVE_FILTER"
 }
 
 # SessionStart: make sure the session has a record and knows its window, its
@@ -732,15 +853,17 @@ cmd_hook_end() {
 
 cmd_open() { [[ -n ${1:-} ]] && launch xdg-open "$1"; }
 
-# A forgotten row stays forgotten: without the marker the session's next hook
-# would rebuild it, paying a session listing and coming back with no title.
+# Hiding a row takes it out of the list and nothing else. The session keeps
+# running, its hooks keep updating the record it still has - so it never comes
+# back untitled - and the day-old prune clears it in the end like any other.
+# This used to delete the record and run `claude rm`, which deletes the
+# background session and its worktree: far too much for a right-click.
+# A hidden session that ends up needing you is listed again rather than
+# blocking out of sight; visibleSessions makes that call.
 cmd_forget() {
   local short=${1:-}
   [[ -n $short && -f $SESSIONS/$short.json ]] || return 0
-  ignore_session "$short" forever
-  rm -f "$SESSIONS/$short.json" "$SESSIONS/.$short.lock"
-  claude rm "$short" >/dev/null 2>&1 </dev/null
-  write_feed
+  update_session "$short" '.hidden = true'
 }
 
 cmd_pin() {
@@ -817,13 +940,50 @@ mask_tokens() { # <modmask>
 
 # The press bind for this script as written in a hypr config file, either
 # `o.bind("SUPER + D", …, voxclaude .. " start")` or
-# `bind = SUPER, D, exec, …/voxclaude start`.
+# `bind = SUPER, D, exec, …/voxclaude start`. Taking the first line that
+# mentioned the script read a commented-out bind as the live one, took " start"
+# as the key when the call was wrapped over lines, and dropped the modifier
+# when a .conf named it through a variable.
 config_bind() { # <file>
-  local line
-  line=$(grep -m1 -E 'voxclaude.* start($|[^a-z])' "$1" 2>/dev/null) || return 1
   case $1 in
-    *.lua) sed -n 's/^[^"]*"\([^"]*\)".*/\1/p' <<< "$line" ;;
-    *) sed -n 's/^[[:space:]]*bind[a-z]*[[:space:]]*=[[:space:]]*//p' <<< "$line" | cut -d, -f1,2 ;;
+    *.lua)
+      # Comments out, then the file as one line so a wrapped call stays whole,
+      # then one record per `o.bind(` so the spec belongs to the call that
+      # actually mentions this script.
+      sed 's/--.*$//' "$1" 2>/dev/null | tr '\n' ' ' \
+        | awk -v RS='o[.]bind[(]' '
+            NR > 1 && /voxclaude/ && /start/ {
+              if (match($0, /"[^"]*"/)) { print substr($0, RSTART + 1, RLENGTH - 2); exit }
+            }'
+      ;;
+    *)
+      awk '
+        function litsub(s, from, to,   i) {
+          i = index(s, from)
+          while (i > 0) { s = substr(s, 1, i - 1) to substr(s, i + length(from)); i = index(s, from) }
+          return s
+        }
+        /^[[:space:]]*#/ { next }
+        /^[[:space:]]*\$[A-Za-z_][A-Za-z0-9_]*[[:space:]]*=/ {
+          name = $0
+          sub(/^[[:space:]]*/, "", name); sub(/[[:space:]]*=.*$/, "", name)
+          val = $0
+          sub(/^[^=]*=[[:space:]]*/, "", val); sub(/[[:space:]]+$/, "", val)
+          var[name] = val
+          next
+        }
+        /^[[:space:]]*bind[a-z]*[[:space:]]*=/ && /voxclaude/ && /start([^a-z]|$)/ {
+          spec = $0
+          sub(/^[^=]*=[[:space:]]*/, "", spec)
+          split(spec, f, ",")
+          mods = f[1]; key = f[2]
+          for (v in var) { mods = litsub(mods, v, var[v]); key = litsub(key, v, var[v]) }
+          gsub(/^[[:space:]]+|[[:space:]]+$/, "", mods)
+          gsub(/^[[:space:]]+|[[:space:]]+$/, "", key)
+          print mods "," key
+          exit
+        }' "$1" 2>/dev/null
+      ;;
   esac
 }
 

@@ -341,7 +341,7 @@ Panel {
         Text {
           textFormat: Text.PlainText
           width: parent.width
-          text: "Click a row to open it in a terminal, done or not. Chips open the result. Hover a row to pin it (p); right-click or Delete forgets it. Say “terminal” to start Claude in a window instead."
+          text: "Click a row to open it in a terminal, done or not. Chips open the result. Hover a row to pin it (p); right-click or Delete hides it. Say “terminal” to start Claude in a window instead."
           color: root.dim
           font.family: root.fontFamily
           font.pixelSize: Style.font.caption

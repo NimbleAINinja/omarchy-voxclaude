@@ -312,6 +312,15 @@ test("visibleSessions drops rows with no prompt, unless they need you", () => {
   assert.deepEqual(Model.visibleSessions(null), [])
 })
 
+test("visibleSessions drops rows the user hid, unless they need you", () => {
+  const rows = [
+    { shortId: "hidden", status: "done", prompt: "did a thing", hidden: true, startedAt: 3 },
+    { shortId: "kept", status: "thinking", prompt: "still going", startedAt: 2 },
+    { shortId: "blocked", status: "needs-input", prompt: "hidden but stuck", hidden: true, startedAt: 1 }
+  ]
+  assert.deepEqual(Model.visibleSessions(rows).map(r => r.shortId), ["kept", "blocked"])
+})
+
 test("latestFinish is the newest finish among the sessions that are done", () => {
   assert.equal(Model.latestFinish([
     { status: "done", finishedAt: 100 },
@@ -328,8 +337,8 @@ test("latestFinish is the newest finish among the sessions that are done", () =>
 test("resultLabel shortens urls and paths for chips", () => {
   assert.equal(Model.resultLabel({ kind: "url", value: "http://localhost:5173/" }), "localhost:5173")
   assert.equal(Model.resultLabel({ kind: "url", value: "https://example.com/some/long/path?x=1" }), "example.com/some/long/path")
-  assert.equal(Model.resultLabel({ kind: "path", value: "/home/hydrox/Work/plants/index.html" }), "plants/index.html")
-  assert.equal(Model.resultLabel({ kind: "path", value: "/home/hydrox/Work/plants" }), "Work/plants")
+  assert.equal(Model.resultLabel({ kind: "path", value: "/home/x/Work/plants/index.html" }), "plants/index.html")
+  assert.equal(Model.resultLabel({ kind: "path", value: "/home/x/Work/plants" }), "Work/plants")
 })
 
 test("sortSessions puts needs-input first, then pinned, then newest", () => {

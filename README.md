@@ -22,9 +22,9 @@ Built for the [Omarchy](https://omarchy.org) shell on top of
   three seconds, so a finished task registers even if you missed the toast.
   Hover for the current prompt and step.
 - **Popover** (left-click) with the recent voice sessions, needs-input first.
-  Its hero is a second critter in Claude's own colours, traced from the
-  laptop gif: he blinks while listening, pulls a laptop out from behind his
-  back and types while Claude works, and hops when Claude needs you.
+  Its hero is a second, larger critter: he blinks while listening, pulls a
+  laptop out from behind his back and types while Claude works, and hops when
+  Claude needs you.
   Each row carries a status dot and word: green when done, yellow while Claude
   is working or waiting on a background command it started (a build poll, a
   dev server), red when it needs you or something failed, grey when stopped.
@@ -37,8 +37,8 @@ Built for the [Omarchy](https://omarchy.org) shell on top of
   drop into a task or carry it on. Click a chip to open the result. Hovering a
   row reveals a pin: it keeps the row near the top, below anything waiting on
   you, and exempt from the 24-hour prune, and stays visible once set.
-  Right-click (or Delete) forgets a row. Keys: arrows move, Enter opens, `p`
-  pins, Delete forgets, `r` refreshes.
+  Right-click (or Delete) hides a row. Keys: arrows move, Enter opens, `p`
+  pins, Delete hides, `r` refreshes.
 - **Toasts**: "Working on it" when a session starts, "Claude needs you" when a
   terminal was opened for you, and Claude's reply when it finishes; clicking
   the reply toast opens the result if there is one, otherwise the conversation.
@@ -204,8 +204,11 @@ Findings from the CLI this was built against (Claude Code 2.1.266):
   hooks themselves, so a machine that only tracks terminal sessions does not
   pile them up. The bar status is recomputed from the records on every hook,
   so a lost notification cannot wedge the glyph.
-- Forgetting a row is final for that session: its later hooks are ignored, so
-  it cannot come back untitled at its next tool call.
+- Hiding a row takes it out of the list and nothing else: the session keeps
+  running, and because it keeps its record it never returns untitled. The
+  day-old prune clears it in the end, like any other row. One exception: a
+  hidden session that ends up needing you is listed again, because waiting out
+  of sight for someone who cannot see it is worse than an unwanted row.
 - Clicking a row seems to do nothing: the attach window opened as a tile
   behind your floating or maximized terminal. Add the window rules from the
   Install section.
