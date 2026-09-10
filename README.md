@@ -82,7 +82,7 @@ status line marks sessions started from a terminal apart from voice ones.
 ## Requirements
 
 - Omarchy 4 shell with voxtype installed and its daemon running
-  (`systemctl --user status voxtype`). voxtype ≥ 1.0 is needed for
+  (`voxtype status` prints `idle` when it is). voxtype ≥ 1.0 is needed for
   `record start --file` and `record stop --wait`.
 - Claude Code CLI ≥ 2.1.260 (`claude --bg`, `claude attach`, session-scoped hooks).
 - `jq`, `flock` and `setsid` (util-linux), `pgrep` (procps), `hyprctl`,
