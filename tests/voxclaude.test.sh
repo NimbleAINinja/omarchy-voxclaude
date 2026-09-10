@@ -15,6 +15,10 @@ export VOXTYPE_STOP_EXIT=0
 export VOXTYPE_START_EXIT=0
 export VOXTYPE_TEXT="hello there"
 mkdir -p "$HOME/.config/omarchy" "$HOME/.claude" "$XDG_RUNTIME_DIR" "$tmp/bin" "$HOME/Work" "$HOME/Proj"
+# The stubs create it on first use; without it an early not_called greps a
+# file that is not there yet and prints an error while returning the right
+# answer anyway.
+: > "$LOG"
 echo '{"theme":"dark","hooks":{"Stop":[{"hooks":[{"type":"command","command":"echo other"}]}]}}' > "$HOME/.claude/settings.json"
 RT="$XDG_RUNTIME_DIR/voxclaude"
 
@@ -259,7 +263,8 @@ check "waiting sets the bar status" test "$(status)" = waiting
 check "waiting keeps the reply" bash -c "jq -e '.reply == \"Waiting on the build.\"' '$RT/sessions/abcd1234.json' >/dev/null"
 tool Bash '{"command":"gh pr view","description":"Check the PR"}'
 check "a tool call on a waiting session marks it busy" bash -c "jq -e '.status == \"thinking\"' '$RT/sessions/abcd1234.json' >/dev/null"
-kill "$bgpid" 2>/dev/null; wait "$bgpid" 2>/dev/null || true
+{ kill "$bgpid" || true; } 2>/dev/null
+disown "$bgpid" 2>/dev/null || true
 printf '%s' '{"session_id":"abcd1234-0000-4000-8000-000000000000","hook_event_name":"Stop","last_assistant_message":"Build passed, merged."}' | "$script" hook stop
 check "stop with nothing running marks the session done" bash -c "jq -e '.status == \"done\"' '$RT/sessions/abcd1234.json' >/dev/null"
 unset CLAUDE_STUB_PID
@@ -423,7 +428,7 @@ check "a trailing no-file-or-URL note is dropped" \
 check "the same note in its own sentence is dropped" \
   test "$(reply_after 'Signal is running now. There is no file or URL to open.')" = 'Signal is running now.'
 check "the toast never carries the note" \
-  bash -c "sleep 0.3; ! grep '^omarchy-notification-send' '\$LOG' | grep -qi 'no file or url'" 
+  bash -c "sleep 0.3; ! grep '^omarchy-notification-send' \"\$LOG\" | grep -qi 'no file or url'" 
 check "a real result line is kept" \
   test "$(reply_after 'Wrote the notes to ~/Work/notes.md.')" = 'Wrote the notes to ~/Work/notes.md.'
 check "a sentence that only starts with no is kept" \
@@ -593,7 +598,10 @@ check "session start on a known session never asks claude for the list" not_call
 printf '%s' '{"session_id":"abcd1234-0000-4000-8000-000000000000","hook_event_name":"Stop","last_assistant_message":"done"}' | "$script" hook stop
 check "stop with a known pid never asks claude for the session list" not_called $'claude\t.*\tagents'
 check "stop with a known pid still finishes the session" bash -c "jq -e '.status == \"done\"' '$RT/sessions/abcd1234.json' >/dev/null"
-pkill -P "$wrapper" 2>/dev/null; kill "$wrapper" 2>/dev/null; wait "$wrapper" 2>/dev/null || true
+# disown before reaping: the shell announces a killed job itself, and that
+# notice is not the command's stderr, so it cannot be redirected away.
+{ pkill -P "$wrapper" || true; kill "$wrapper" || true; } 2>/dev/null
+disown "$wrapper" 2>/dev/null || true
 : > "$tmp/jq-dispatch"
 JQ_COUNT="$tmp/jq-dispatch" PATH="$tmp/countbin:$PATH" "$script" dispatch "budget check" >/dev/null 2>&1 || true
 check "dispatch reads all its settings in one pass (at most 6 jq calls)" test "$(wc -l < "$tmp/jq-dispatch")" -le 6
