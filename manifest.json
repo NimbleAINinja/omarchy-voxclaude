@@ -55,7 +55,7 @@
         "type": "string",
         "label": "Terminal trigger words",
         "defaultValue": "terminal",
-        "description": "Comma-separated words. If you say one of them, Claude opens in a terminal instead of the background."
+        "description": "Comma-separated words. Say one of them and a terminal opens on the session from the start; it still runs in the background."
       },
       {
         "key": "waitSeconds",

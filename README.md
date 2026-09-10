@@ -1,53 +1,83 @@
 # VoxClaude
 
-Hold a key, say what you want, let go. Claude Code does it in the background and
-tells you when it is done. A terminal opens only when you ask for one ("open a
-terminal and …") or when Claude needs you: a permission prompt, a question, a
-tool asking for input. Either way the session itself runs in the background, so
-closing that window leaves the work running and clicking the row picks it back
-up.
+**Push to talk to Claude Code.** Hold a key, say what you want, let go. Claude
+does it in the background while you keep working, and every session you start
+stays one click away in the Omarchy bar.
+
+<p align="center"><img src="preview.png" width="340" alt="The VoxClaude popover: two sessions working, one done with links to its results"></p>
 
 Built for the [Omarchy](https://omarchy.org) shell on top of
 [voxtype](https://github.com/peteonrails/voxtype) and the
 [Claude Code](https://code.claude.com) CLI.
 
-<p align="center"><img src="preview.png" width="340" alt="The VoxClaude popover: two sessions working, one done with its result chips"></p>
+## Why
 
-## What you get
+**Talking is faster than a terminal.** Most of what you ask Claude to do fits in
+a sentence: "run the tests and fix whatever fails", "make the gallery lazy-load
+its images", "write release notes for 2.3 from the merged PRs". With VoxClaude
+that sentence is the whole interaction. Hold Super+D, say it, release. No
+window to find, no prompt to type into, no context switch away from whatever
+you were doing.
 
-- **Bar critter**: a pixel-art invader with Claude's eyes. It sits still when
-  idle, blinks while listening, swings its arms and legs while Claude works,
-  waves faster in the urgent colour when Claude needs you, and turns red when
-  something failed. When a session finishes it blinks green three times over
-  three seconds, so a finished task registers even if you missed the toast.
-  Hover for the current prompt and step.
-- **Popover** (left-click) with the recent voice sessions, needs-input first.
-  Its hero is a second, larger critter: he blinks while listening, pulls a
-  laptop out from behind his back and types while Claude works, and hops when
-  Claude needs you.
-  Each row carries a status dot and word: green when done, yellow while Claude
-  is working or waiting on a background command it started (a build poll, a
-  dev server), red when it needs you or something failed, grey when stopped.
-  A finished session that wakes up again (a background task reporting back, or
-  a follow-up you typed after attaching) goes back to yellow.
-  Every row shows the prompt, then status · elapsed, then what Claude is doing
-  right now on a line of its own (e.g. "Running: Install deps" or "Editing
-  App.jsx"), the reply once done, and chips for anything the reply points at:
-  URLs and files that exist. Click a row to open it in a terminal, done or not, so you can
-  drop into a task or carry it on. Click a chip to open the result. Hovering a
-  row reveals a pin: it keeps the row near the top, below anything waiting on
-  you, and exempt from the 24-hour prune, and stays visible once set.
-  Right-click (or Delete) hides a row. Keys: arrows move, Enter opens, `p`
-  pins, Delete hides, `r` refreshes.
-- **Toasts**: "Working on it" when a session starts, "Claude needs you" when a
-  terminal was opened for you, and Claude's reply when it finishes; clicking
-  the reply toast opens the result if there is one, otherwise the conversation.
-- **A hint to Claude**: voice sessions get a short appended system prompt saying
-  they were started from a widget the user cannot see, so replies stay short
-  and end with where the result is when there is one. That line is what feeds
-  the chips. When there is nothing to point at the reply says nothing about
-  it, and a model that reports the absence anyway ("No file or URL for this
-  one.") has that sentence dropped before it reaches a toast or a row.
+**Agents run in the background. Drop in whenever you like.** Every request
+starts a real `claude --bg` session that belongs to the Claude daemon, not to a
+window. You get a toast when it starts and a toast with the reply when it is
+done, and in between the bar shows what Claude is doing right now: "Running:
+npm test", "Editing Gallery.tsx". Want to watch, steer, or take over? Click the
+row and a terminal opens attached to the live session. Close it again and the
+work carries on. If Claude needs you, for a permission, a question, or a tool
+that wants input, VoxClaude opens that terminal for you and says so. Say
+"terminal" anywhere in your request and it opens the window from the start.
+
+**Your recent sessions, in one place.** Left-click the bar icon for a list of
+what Claude has been doing: the prompt, its status, how long it has been
+running, the current step, and the reply once it is done, with clickable chips
+for any file or URL the reply points at. Anything waiting on you sorts to the
+top. Click a row to open it in a terminal, done or not, so you can follow up on
+a finished task or pick up one that is still going. Pin the ones you want to
+keep, hide the ones you don't. Install the optional hooks and sessions you
+start yourself in a terminal show up here too, so the popover becomes the one
+list of every Claude session on the machine.
+
+## A session, start to finish
+
+1. Hold Super+D. The bar critter blinks: it is listening.
+2. Say what you want and release the key. voxtype transcribes it, Claude Code
+   starts in the background in your working directory, and a toast says
+   "Working on it".
+3. The critter swings its arms while Claude works. Hover it for the prompt and
+   the current step; open the popover for the full list.
+4. If Claude needs you, the critter turns urgent, a toast says "Claude needs
+   you", and a terminal opens on the session. Answer, then close the window or
+   leave it open. The session does not care.
+5. When Claude finishes, the critter blinks green three times and a toast shows
+   the reply. Click the toast to open the result, or the conversation if there
+   is nothing to open.
+
+Voice sessions get a short appended system prompt telling Claude it was
+started from a widget the user cannot see, so replies stay short and name
+where the result is. That line is what feeds the chips.
+
+## The popover
+
+Each row shows the prompt, then a status dot and word, the elapsed time, and
+the current step on its own line. Green means done; yellow means Claude is
+working or waiting on a background command it started (a build, a dev server);
+red means it needs you or something failed; grey means stopped. A finished
+session that wakes up again, because a background task reported back or you
+typed a follow-up after attaching, goes back to yellow. A small glyph on the
+status line marks sessions started from a terminal apart from voice ones.
+
+| Action | Effect |
+|---|---|
+| Left-click the bar icon | Open / close the popover |
+| Hover the bar icon | Tooltip with the current prompt and step |
+| Click a row, or `Enter` | Open the session in a terminal, done or not (voice: `claude attach`; terminal rows: focus their window, or resume if it is gone) |
+| Click a chip | Open the file or URL in your default app |
+| Hover a row and click the pin, or `p` | Keep the row near the top and exempt from the daily prune |
+| Right-click a row, or `Delete` | Hide the row (the session keeps running) |
+| Arrows | Move between rows |
+| `r` | Refresh |
 
 ## Requirements
 
@@ -55,23 +85,22 @@ Built for the [Omarchy](https://omarchy.org) shell on top of
   (`systemctl --user status voxtype`). voxtype ≥ 1.0 is needed for
   `record start --file` and `record stop --wait`.
 - Claude Code CLI ≥ 2.1.260 (`claude --bg`, `claude attach`, session-scoped hooks).
-- `jq`, `flock` and `setsid` (util-linux), `pgrep` (procps), and `hyprctl`,
-  `xdg-open` and Omarchy's own `omarchy-notification-send` and
+- `jq`, `flock` and `setsid` (util-linux), `pgrep` (procps), `hyprctl`,
+  `xdg-open`, and Omarchy's own `omarchy-notification-send` and
   `omarchy-launch-tui`. All ship with Omarchy.
 
 ## Install
 
 ```bash
-git clone https://github.com/NimbleAINinja/omarchy-voxclaude \
-  ~/.config/omarchy/plugins/io.github.nimbleaininja.voxclaude
-omarchy-shell shell rescanPlugins
+omarchy plugin add https://github.com/NimbleAINinja/omarchy-voxclaude.git --enable
 ```
 
-Add the widget to the bar (Omarchy menu → Setup → Bar, or put
+That clones the plugin and adds the widget to the bar. (Without `--enable`, add
+it later from Omarchy menu → Setup → Bar, or put
 `{"id": "io.github.nimbleaininja.voxclaude"}` into a `bar.layout` section of
-`~/.config/omarchy/shell.json`).
+`~/.config/omarchy/shell.json`.)
 
-Then bind the key in `~/.config/hypr/bindings.lua`; the plugin cannot install
+Then bind the key in `~/.config/hypr/bindings.lua`. The plugin cannot install
 binds for you:
 
 ```lua
@@ -81,9 +110,9 @@ o.bind("SUPER + D", "Talk to Claude (hold)", voxclaude .. " start")
 o.bind("SUPER + D", "Talk to Claude (release)", voxclaude .. " stop", { release = true })
 ```
 
-Sessions opened from the widget or a toast run in their own terminal windows.
-Make those float and centre, so they never open as a tile hidden behind a
-floating (Super+T) or maximized window. Add to `~/.config/hypr/hyprland.lua`:
+Terminals that VoxClaude opens on a session should float and centre, so they
+never land as a tile hidden behind a floating (Super+T) or maximized window.
+Add to `~/.config/hypr/hyprland.lua`:
 
 ```lua
 -- VoxClaude: sessions opened from the bar float on top of whatever you are doing.
@@ -93,49 +122,43 @@ o.window("org\\.omarchy\\.voxclaude.*", { size = { 1260, 850 } })  -- pixels; pe
 ```
 
 `hyprctl reload`, then hold Super+D, talk, release. Plain voxtype dictation on
-its own key keeps typing into the focused window; VoxClaude never changes the
+its own key keeps typing into the focused window; VoxClaude never touches the
 voxtype config.
 
 Bind a different key and the widget follows: its hint names the key you
-actually bound, not the one above. `voxclaude keybind` is what resolves it —
-from `hyprctl binds` when the bind carries its command, and from the files in
-`~/.config/hypr` when Omarchy's Lua config compiles the command away behind a
-`__lua` dispatcher. Bind nothing at all and the widget asks you to, rather
-than naming a key that does nothing. The lookup runs when the shell starts and
-again whenever the popover opens, so `hyprctl reload` is enough to correct it.
+actually bound. Bind nothing and it asks you to, rather than naming a key that
+does nothing. (`voxclaude keybind` is what resolves it, from `hyprctl binds`
+when the bind carries its command and from the files in `~/.config/hypr` when
+Omarchy's Lua config hides the command behind a `__lua` dispatcher. It runs
+when the shell starts and whenever the popover opens, so `hyprctl reload` is
+enough to update it.)
 
-## Tracking every Claude session, not only voice ones
-
-The widget turns out to be a good session tracker, so it can watch sessions
-you start in a terminal too:
+### Optional: track every Claude session, not only voice ones
 
 ```bash
 ~/.config/omarchy/plugins/io.github.nimbleaininja.voxclaude/bin/voxclaude hooks install
 ```
 
-That merges the same hooks into `~/.claude/settings.json` (a backup is kept
+That merges VoxClaude's hooks into `~/.claude/settings.json` (a backup is kept
 beside it; `hooks uninstall` removes only VoxClaude's entries, `hooks status`
-says which). From then on every new Claude Code session gets a row once you
-type something: the first prompt is the title, a session that never gets one
-is not listed (unless it needs you, which is worth showing untitled), the row shows the same progress line, and the
-status follows the session. Claude reloads its settings live, so sessions
-already running pick the hooks up too; their row appears at their next tool
-call, with the title filled in by the next prompt you type. `claude -p`
+says which). From then on every Claude Code session you start in a terminal
+gets a row once you type something: the first prompt is the title, and the
+status and step follow the session. Claude reloads its settings live, so
+sessions already running pick the hooks up at their next tool call. `claude -p`
 one-shots are ignored.
 
-Terminal rows remember their window: clicking one focuses that window, or
-resumes the conversation in a fresh floating terminal if the window is gone.
-Toasts fire only when the window is not in front: "Claude needs you" (with the
-window brought forward) and the reply when a turn finishes. A small glyph on
-the status line marks terminal rows apart from voice ones.
+Terminal rows remember their window. Clicking one focuses it, or resumes the
+conversation in a fresh floating terminal if the window is gone. Toasts for
+these fire only when the window is not in front: "Claude needs you" (with the
+window brought forward) and the reply when a turn finishes.
 
 ## Settings
 
-Set on the widget's entry in `shell.json` (or via the bar settings UI):
+Set on the widget's entry in `shell.json`, or from the bar settings UI:
 
 | key | default | meaning |
 |---|---|---|
-| `cwd` | `~/Work` | Directory the Claude session starts in |
+| `cwd` | `~/Work` | Directory voice-launched Claude sessions start in |
 | `permissionMode` | `auto` | `claude --permission-mode`; anything that would prompt opens a terminal instead |
 | `terminalWords` | `terminal` | Comma-separated words that also open a terminal window on the session |
 | `waitSeconds` | `60` | How long to wait for voxtype's transcript |
@@ -157,10 +180,10 @@ Claude hooks   SessionStart       → voxclaude hook start       → record + wi
 ```
 
 `$RT` is `$XDG_RUNTIME_DIR/voxclaude`. It holds `status` (one word the widget
-watches), `sessions/<shortId>.json` (one record per background session),
-`sessions.json` (all records, newest first, rewritten on every change and
-watched by the widget), `hooks.json` (the session-scoped Claude hooks) and
-voxtype's `prompt.txt`.
+watches), `sessions/<shortId>.json` (one record per session), `sessions.json`
+(all records, newest first, rewritten on every change and watched by the
+widget), `hooks.json` (the session-scoped Claude hooks) and voxtype's
+`prompt.txt`.
 
 A `PreToolUse` hook blocks the tool call that fired it, in every session on
 the machine, so the script keeps that path cheap: four `jq` calls per hook
@@ -169,13 +192,13 @@ updates it with the progress note computed inside the same filter, and one
 sorts the whole set into the feed while deciding the bar word. The session's
 Claude pid is remembered on the record instead of asked for (`claude agents
 --json` costs a process launch), and a marker beside the records says which
-sessions are not tracked: a `claude -p` one-shot or a forgotten row for good,
-a session that could not be placed for a minute before it is tried again.
+sessions are not tracked: a `claude -p` one-shot or a hidden row for good, a
+session that could not be placed for a minute before it is tried again.
 
 The two paths you can feel are kept short too. On the key press the
 microphone opens before any housekeeping. On the release, once the transcript
-is in, one `jq` reads every setting, and the record is written the moment
-`claude --bg` returns: the session's uuid and pid arrive with its own
+is in, one `jq` reads every setting and the record is written the moment
+`claude --bg` returns; the session's uuid and pid arrive with its own
 `SessionStart` hook about half a second later, so nothing between letting go
 of the key and "Working on it" waits on the session listing.
 
@@ -188,6 +211,16 @@ Findings from the CLI this was built against (Claude Code 2.1.266):
 - `claude agents --json` reports `status` (`busy`, `waiting`, `idle`), `state`
   (`blocked`, `done`, `stopped`) and `waitingFor`; the widget does not depend
   on these because they are undocumented.
+
+## The bar critter
+
+A pixel-art invader with Claude's eyes keeps the status readable at a glance
+without a word of text. It sits still when idle, blinks while listening,
+swings its arms and legs while Claude works, waves faster in the urgent colour
+when Claude needs you, and turns red when something failed. When a session
+finishes it blinks green three times over three seconds, so a finished task
+registers even if you missed the toast. The popover has a larger cousin who
+pulls a laptop out from behind his back and types while Claude works.
 
 ## Recovery and edge cases
 
@@ -204,13 +237,16 @@ Findings from the CLI this was built against (Claude Code 2.1.266):
 - Records older than a day are pruned (with their lock files), both after the
   microphone opens when you hold the key and, at most once an hour, from the
   hooks themselves, so a machine that only tracks terminal sessions does not
-  pile them up. The bar status is recomputed from the records on every hook,
-  so a lost notification cannot wedge the glyph.
+  pile them up. Pinned rows are exempt. The bar status is recomputed from the
+  records on every hook, so a lost notification cannot wedge the glyph.
 - Hiding a row takes it out of the list and nothing else: the session keeps
   running, and because it keeps its record it never returns untitled. The
-  day-old prune clears it in the end, like any other row. One exception: a
+  daily prune clears it in the end, like any other row. One exception: a
   hidden session that ends up needing you is listed again, because waiting out
   of sight for someone who cannot see it is worse than an unwanted row.
+- A reply that says only that there is no file or URL to point at ("No file or
+  URL for this one.") has that sentence dropped before it reaches a toast or a
+  row.
 - Clicking a row seems to do nothing: the attach window opened as a tile
   behind your floating or maximized terminal. Add the window rules from the
   Install section.
@@ -246,7 +282,7 @@ numbers, and leaves them to you:
 Then remove the plugin and reload:
 
 ```bash
-omarchy plugin remove io.github.nimbleaininja.voxclaude   # or: rm -rf the directory
+omarchy plugin remove io.github.nimbleaininja.voxclaude
 hyprctl reload && omarchy restart shell
 ```
 
@@ -265,12 +301,11 @@ bin/voxclaude list | jq                    # the session records
 bin/voxclaude keybind                      # the hold key the widget will name
 ```
 
-Note: the pixel renderer is `PixelSprite.qml`, not `Sprite.qml`; QtQuick has a
-built-in `Sprite` type that shadows a same-named file.
-
 `Model.js` is pure ES5 shared by QML and node. `bin/voxclaude` is the only
 thing that runs processes; `tests/voxclaude.test.sh` drives it with stub
-`voxtype`, `claude` and `omarchy-*` binaries on `PATH`.
+`voxtype`, `claude` and `omarchy-*` binaries on `PATH`. The pixel renderer is
+`PixelSprite.qml`, not `Sprite.qml`: QtQuick has a built-in `Sprite` type that
+shadows a same-named file.
 
 ## License
 
