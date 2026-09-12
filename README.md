@@ -35,9 +35,9 @@ running, the current step, and the reply once it is done, with clickable chips
 for any file or URL the reply points at. Anything waiting on you sorts to the
 top. Click a row to open it in a terminal, done or not, so you can follow up on
 a finished task or pick up one that is still going. Pin the ones you want to
-keep, hide the ones you don't. Install the optional hooks and sessions you
-start yourself in a terminal show up here too, so the popover becomes the one
-list of every Claude session on the machine.
+keep, hide the ones you don't. Only sessions VoxClaude launched are tracked:
+their hooks are scoped to that one session, and nothing is written to your own
+Claude Code configuration.
 
 ## A session, start to finish
 
@@ -133,25 +133,6 @@ Omarchy's Lua config hides the command behind a `__lua` dispatcher. It runs
 when the shell starts and whenever the popover opens, so `hyprctl reload` is
 enough to update it.)
 
-### Optional: track every Claude session, not only voice ones
-
-```bash
-~/.config/omarchy/plugins/io.github.nimbleaininja.voxclaude/bin/voxclaude hooks install
-```
-
-That merges VoxClaude's hooks into `~/.claude/settings.json` (a backup is kept
-beside it; `hooks uninstall` removes only VoxClaude's entries, `hooks status`
-says which). From then on every Claude Code session you start in a terminal
-gets a row once you type something: the first prompt is the title, and the
-status and step follow the session. Claude reloads its settings live, so
-sessions already running pick the hooks up at their next tool call. `claude -p`
-one-shots are ignored.
-
-Terminal rows remember their window. Clicking one focuses it, or resumes the
-conversation in a fresh floating terminal if the window is gone. Toasts for
-these fire only when the window is not in front: "Claude needs you" (with the
-window brought forward) and the reply when a turn finishes.
-
 ## Settings
 
 Set on the widget's entry in `shell.json`, or from the bar settings UI:
@@ -170,7 +151,7 @@ Super+D down   voxclaude start     voxtype record start --file=$RT/prompt.txt
 Super+D up     voxclaude stop      voxtype record stop --wait  →  transcript
                                    claude --bg --settings $RT/hooks.json -- "<text>"
                                    └─ said a terminal word → foot window: claude attach <shortId>
-Claude hooks   SessionStart       → voxclaude hook start       → record + window for terminal sessions
+Claude hooks   SessionStart       → voxclaude hook start       → session id and pid onto the record
                PreToolUse         → voxclaude hook tool        → progress line; done → busy again
                UserPromptSubmit   → voxclaude hook prompt      → new turn: done → busy again
                Notification (permission_prompt, agent_needs_input, elicitation_*)
@@ -193,9 +174,8 @@ watches), `sessions/<shortId>.json` (one record per session), `sessions.json`
 widget), `hooks.json` (the session-scoped Claude hooks) and voxtype's
 `prompt.txt`.
 
-A `PreToolUse` hook blocks the tool call that fired it, in every session on
-the machine, so the script keeps that path cheap: four `jq` calls per hook
-whatever the backlog. One reads the payload, one checks the record, one
+A `PreToolUse` hook blocks the tool call that fired it, so the script keeps
+that path cheap: four `jq` calls per hook whatever the backlog. One reads the payload, one checks the record, one
 updates it with the progress note computed inside the same filter, and one
 sorts the whole set into the feed while deciding the bar word. The session's
 Claude pid is remembered on the record instead of asked for (`claude agents
@@ -244,8 +224,7 @@ pulls a laptop out from behind his back and types while Claude works.
   the first line of stderr. `voxclaude status` prints the current word.
 - Records older than a day are pruned (with their lock files), both after the
   microphone opens when you hold the key and, at most once an hour, from the
-  hooks themselves, so a machine that only tracks terminal sessions does not
-  pile them up. Pinned rows are exempt. The bar status is recomputed from the
+  hooks themselves. Pinned rows are exempt. The bar status is recomputed from the
   records on every hook, so a lost notification cannot wedge the glyph.
 - Hiding a row takes it out of the list and nothing else: the session keeps
   running, and because it keeps its record it never returns untitled. The
@@ -263,22 +242,16 @@ pulls a laptop out from behind his back and types while Claude works.
 
 ## Removing it
 
-VoxClaude puts three things outside its own directory: hooks in
-`~/.claude/settings.json` if you ran `hooks install`, a widget entry in
-`shell.json`, and the binds and window rules in your Hyprland config. Run this
-first, while the plugin is still there:
+VoxClaude puts two things outside its own directory: a widget entry in
+`shell.json`, and the binds and window rules in your Hyprland config. Its
+runtime state lives under `$XDG_RUNTIME_DIR`. Run this first, while the plugin
+is still there:
 
 ```bash
 ~/.config/omarchy/plugins/io.github.nimbleaininja.voxclaude/bin/voxclaude uninstall
 ```
 
-It takes its own hooks back out of `~/.claude/settings.json`, leaving anything
-else in there untouched, and clears the runtime state. That has to happen
-before the directory goes: those hooks name the script by absolute path, and
-left behind they would make every Claude Code session on the machine run a
-command that is not there, once per tool call.
-
-It then prints the lines to delete from your own config files, with line
+It clears the runtime state and then prints the lines to delete from your own config files, with line
 numbers, and leaves them to you:
 
 - the `io.github.nimbleaininja.voxclaude` entry in a `bar.layout` section of

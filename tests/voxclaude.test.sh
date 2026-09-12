@@ -19,7 +19,6 @@ mkdir -p "$HOME/.config/omarchy" "$HOME/.claude" "$XDG_RUNTIME_DIR" "$tmp/bin" "
 # file that is not there yet and prints an error while returning the right
 # answer anyway.
 : > "$LOG"
-echo '{"theme":"dark","hooks":{"Stop":[{"hooks":[{"type":"command","command":"echo other"}]}]}}' > "$HOME/.claude/settings.json"
 RT="$XDG_RUNTIME_DIR/voxclaude"
 
 make_stub() {
@@ -311,18 +310,13 @@ check "attach latest passes over a hidden row" not_called 'claude attach'
 reset; VOXTYPE_TEXT="do a thing" "$script" stop
 printf '%s' '{"session_id":"abcd1234-0000-4000-8000-000000000000","hook_event_name":"Stop","last_assistant_message":"all done"}' | "$script" hook stop
 
-# ---- global hooks: terminal sessions ------------------------------------------
+# ---- terminal sessions (hooks the user wired up themselves) -----------------
+# The plugin never touches ~/.claude/settings.json; these cover a SessionStart
+# arriving for a session it did not launch.
 reset
-"$script" hooks install >/dev/null 2>&1 || true
-settings=$HOME/.claude/settings.json
-check "hooks install writes every event into user settings" bash -c "jq -e --arg s \"$script\" '[.hooks.SessionStart, .hooks.UserPromptSubmit, .hooks.PreToolUse, .hooks.Notification, .hooks.Stop, .hooks.SessionEnd] | all(any(.[]; .hooks[0].command | startswith(\$s)))' '$settings' >/dev/null"
-check "hooks install keeps the needs-input matcher" bash -c "jq -e '.hooks.Notification[0].matcher == \"permission_prompt|agent_needs_input|elicitation_dialog|elicitation_url_dialog\"' '$settings' >/dev/null"
-check "hooks status reports installed" bash -c "'$script' hooks status | grep -q installed"
-"$script" hooks install >/dev/null 2>&1 || true
-check "hooks install is idempotent and keeps foreign hooks" bash -c "jq -e '(.hooks.Stop | length) == 2 and ([.hooks.Stop[].hooks[].command] | index(\"echo other\") != null)' '$settings' >/dev/null"
 : > "$LOG"; VOXTYPE_TEXT="voice task" "$script" stop
-check "dispatch skips its own hooks file once global hooks exist" not_called 'settings '"$RT"'/hooks.json'
 check "voice record is tagged voice" bash -c "jq -e '.kind == \"voice\"' '$RT/sessions/abcd1234.json' >/dev/null"
+check "the plugin never writes the user's Claude settings" test ! -e "$HOME/.claude/settings.json"
 
 export HYPR_WINDOW_PID=$$
 printf '%s' '{"session_id":"ffff1234-0000-4000-8000-000000000000","hook_event_name":"SessionStart","source":"startup","cwd":"'"$HOME/Proj"'"}' | "$script" hook start || true
@@ -373,9 +367,6 @@ check "stop on a terminal marks it done" bash -c "jq -e '.status == \"done\"' '$
 check "attach on a terminal session focuses its window" called $'hyprctl\t.*\tdispatch .*0xabc'
 : > "$LOG"; HYPR_NO_WINDOWS=1 "$script" attach ffff1234
 check "attach with the window gone resumes in a new terminal" called $'omarchy-launch-tui\t'"$HOME/Proj"$'\t--app-id=org.omarchy.voxclaude.ffff1234 claude --resume ffff1234-0000-4000-8000-000000000000'
-"$script" hooks uninstall >/dev/null 2>&1 || true
-check "hooks uninstall removes ours" bash -c "jq -e '(.hooks // {} | to_entries | map(.value[]?.hooks[]?.command | select(startswith(\"$script\"))) | length) == 0' '$settings' >/dev/null"
-check "hooks uninstall keeps other settings" bash -c "jq -e '.theme == \"dark\"' '$settings' >/dev/null"
 unset HYPR_WINDOW_PID; rm -f "$RT/sessions/ffff1234.json"
 reset; VOXTYPE_TEXT="do a thing" "$script" stop
 printf '%s' '{"session_id":"abcd1234-0000-4000-8000-000000000000","hook_event_name":"Stop","last_assistant_message":"all done"}' | "$script" hook stop
@@ -546,15 +537,6 @@ bash -c 'exit 0' & dead=$!; wait $dead 2>/dev/null
 jq --argjson pid "$dead" '.pid = $pid' "$RT/sessions/abcd1234.json" > "$tmp/rec" && mv "$tmp/rec" "$RT/sessions/abcd1234.json"
 printf '{"session_id":"abcd1234-0000-4000-8000-000000000000","hook_event_name":"PreToolUse","tool_name":"Read","tool_input":{"file_path":"/x/a.md"}}' | "$script" hook tool || true
 check "a fresh record with a stale pid keeps working" bash -c "jq -e '.status == \"thinking\"' '$RT/sessions/abcd1234.json' >/dev/null"
-
-# ---- hooks install on a broken settings file --------------------------------------
-cp "$HOME/.claude/settings.json" "$tmp/settings.good"
-printf '%s' '{ "theme": "dark", }' > "$HOME/.claude/settings.json"
-check "hooks install fails loudly on unparseable settings" bash -c "! '$script' hooks install >/dev/null 2>&1"
-check "hooks install leaves the broken file alone" bash -c "grep -q 'theme' '$HOME/.claude/settings.json'"
-check "hooks install leaves no stray temp file" test ! -f "$HOME/.claude/settings.json.tmp"
-check "hooks uninstall fails loudly too" bash -c "! '$script' hooks uninstall >/dev/null 2>&1"
-cp "$tmp/settings.good" "$HOME/.claude/settings.json"
 
 reset; VOXTYPE_TEXT="do a thing" "$script" stop
 printf '%s' '{"session_id":"abcd1234-0000-4000-8000-000000000000","hook_event_name":"Stop","last_assistant_message":"all done"}' | "$script" hook stop
@@ -792,26 +774,21 @@ check "racing hooks leave no stray temp file" bash -c "! ls '$RT/sessions/'eeee9
 check "racing hooks leave a feed that still parses" bash -c "jq -e 'type == \"array\"' '$RT/sessions.json' >/dev/null"
 
 # ---- uninstall ----------------------------------------------------------------
-# The hooks name this script by absolute path, so they have to come out before
-# the directory does, or every session on the machine runs a missing command.
 reset
-"$script" hooks install >/dev/null 2>&1 || true
-jq '.hooks.PreToolUse += [{hooks:[{type:"command",command:"someone-elses-hook"}]}] | .theme = "dark"' \
-  "$HOME/.claude/settings.json" > "$tmp/s" && mv "$tmp/s" "$HOME/.claude/settings.json"
+echo '{"theme":"dark","hooks":{"PreToolUse":[{"hooks":[{"type":"command","command":"someone-elses-hook"}]}]}}' \
+  > "$HOME/.claude/settings.json"
 VOXTYPE_TEXT="do a thing" "$script" stop
 echo '{"bar":{"layout":{"right":[{"id":"io.github.nimbleaininja.voxclaude"},{"id":"other.widget"}]}}}' \
   > "$HOME/.config/omarchy/shell.json"
 out=$("$script" uninstall 2>&1)
-check "uninstall takes our hooks back out" bash -c "! jq -e --arg s '$script' '[(.hooks // {})[]?[]?.hooks[]?.command // \"\" | select(startswith(\$s))] | length > 0' '$HOME/.claude/settings.json' >/dev/null"
-check "uninstall leaves other people's hooks alone" bash -c "jq -e '[(.hooks // {})[]?[]?.hooks[]?.command] | any(. == \"someone-elses-hook\")' '$HOME/.claude/settings.json' >/dev/null"
-check "uninstall leaves the rest of the settings alone" bash -c "jq -e '.theme == \"dark\"' '$HOME/.claude/settings.json' >/dev/null"
+check "uninstall leaves the user's Claude settings untouched" bash -c "jq -e '.theme == \"dark\" and ([.hooks[][].hooks[].command] == [\"someone-elses-hook\"])' '$HOME/.claude/settings.json' >/dev/null"
 check "uninstall clears the runtime state" test ! -d "$RT"
 check "uninstall names the config files it will not touch" bash -c "grep -q 'yours to edit' <<< \"\$0\"" "$out"
 check "uninstall says how to remove the plugin" bash -c "grep -q 'omarchy plugin remove io.github.nimbleaininja.voxclaude' <<< \"\$0\"" "$out"
 check "uninstall points at the widget entry it will not touch" bash -c "grep -q 'shell.json' <<< \"\$0\"" "$out"
 check "uninstall does not edit the widget entry itself" bash -c "grep -q 'io.github.nimbleaininja.voxclaude' '$HOME/.config/omarchy/shell.json'"
 rm -f "$HOME/.config/omarchy/shell.json"
-check "uninstall on a machine that never installed hooks is quiet" bash -c "'$script' uninstall 2>&1 | grep -q 'no hooks of ours'"
+check "uninstall never mentions Claude settings" bash -c "! '$script' uninstall 2>&1 | grep -q 'settings.json'"
 
 # ---- runtime directory ------------------------------------------------------
 # State is private to the user: a 0700 directory, never a symlink or someone

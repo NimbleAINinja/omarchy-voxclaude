@@ -12,9 +12,7 @@
 #   voxclaude open <url|path>    open a result with xdg-open
 #   voxclaude forget <id>        hide a session's row (the session keeps running)
 #   voxclaude pin <id>           toggle a record's pin (kept at the top, never pruned)
-#   voxclaude hook start         Claude Code SessionStart hook: track terminal sessions
-#   voxclaude hooks install      put the hooks in ~/.claude/settings.json (all sessions)
-#   voxclaude hooks uninstall    remove them again; hooks status says which
+#   voxclaude hook start         Claude Code SessionStart hook: fill in the record
 #   voxclaude attach <id|latest> open a terminal attached to a session
 #   voxclaude list --json        session records as a JSON array
 #   voxclaude status             current bar status word
@@ -66,7 +64,6 @@ MARKER=$RT/recording
 STATUS_FILE=$RT/status
 HOOKS_FILE=$RT/hooks.json
 FEED_FILE=$RT/sessions.json
-SETTINGS=${CLAUDE_SETTINGS:-$HOME/.claude/settings.json}
 [[ -d $SESSIONS ]] || mkdir -p "$SESSIONS"
 
 # ---------------------------------------------------------------- helpers
@@ -288,14 +285,6 @@ hooks_json() {
 
 write_hooks() {
   jq -n --argjson hooks "$(hooks_json)" '{ hooks: $hooks }' > "$HOOKS_FILE.tmp" && mv -f "$HOOKS_FILE.tmp" "$HOOKS_FILE"
-}
-
-# True when ~/.claude/settings.json already routes hooks to this script; then
-# every session reports on its own and voice sessions must not double up.
-global_hooks_installed() {
-  [[ -f $SETTINGS ]] || return 1
-  jq -e --arg self "$self " '
-    [(.hooks // {})[]?[]?.hooks[]?.command // ""] | any(startswith($self))' "$SETTINGS" >/dev/null 2>&1
 }
 
 session_file() { printf '%s' "$SESSIONS/$1.json"; }
@@ -563,8 +552,8 @@ bootstrap_record() { # <sessionId> <cwd>
 }
 
 # Read the hook payload on stdin; sets $short, $sid and $payload. A session
-# without a record gets one if Claude lists it, so hooks installed after a
-# session started still pick it up. Returns 1 when it is not one to track.
+# without a record gets one if Claude lists it, so a session that started before
+# its record existed is still picked up. Returns 1 when it is not one to track.
 read_hook() {
   set_now
   payload=$(cat)
@@ -668,11 +657,10 @@ cmd_dispatch() {
   # the window leaves the work running and clicking the row picks it back up.
   wants_terminal "$text" "$S_WORDS" && watched=1
 
-  local -a settings_args=() prompt_args=()
-  if ! global_hooks_installed; then
-    write_hooks
-    settings_args=(--settings "$HOOKS_FILE")
-  fi
+  # Hooks are scoped to this one session through --settings: nothing is put
+  # in the user's own Claude configuration.
+  local -a prompt_args=()
+  write_hooks
   # That appended note tells Claude nobody can see this session. With a window
   # open on it, somebody can.
   (( watched )) || prompt_args=(--append-system-prompt "$VOICE_PROMPT")
@@ -680,7 +668,7 @@ cmd_dispatch() {
   # The redirect wraps the whole subshell: on claude alone, a working
   # directory that could not be entered went to this script's stderr and the
   # failure toast below reported it with an empty body.
-  out=$( { cd "$cwd" && claude --bg --name "voice: $(excerpt "$text" 40)" "${settings_args[@]}" \
+  out=$( { cd "$cwd" && claude --bg --name "voice: $(excerpt "$text" 40)" --settings "$HOOKS_FILE" \
         --permission-mode "$mode" "${prompt_args[@]}" -- "$text"; } 2>&1 </dev/null)
   short=$(grep -oiE 'backgrounded[^0-9a-f]*[0-9a-f]{6,}' <<< "$out" | grep -oE '[0-9a-f]{6,}$' | head -1)
   if [[ -z $short ]]; then
@@ -837,49 +825,6 @@ cmd_hook_start() {
      | if $cwd != "" then .cwd = $cwd else . end
      | if (.sessionId // "") == "" then .sessionId = $sid else . end
      | if (.pid // 0) == 0 and $apid > 0 then .pid = $apid else . end'
-}
-
-# ---- hooks in ~/.claude/settings.json
-
-cmd_hooks() {
-  local backup=$SETTINGS.bak-voxclaude current
-  case ${1:-status} in
-    install)
-      mkdir -p "$(dirname "$SETTINGS")"
-      [[ -f $SETTINGS ]] || echo '{}' > "$SETTINGS"
-      [[ -f $backup ]] || cp "$SETTINGS" "$backup"
-      if jq --argjson ours "$(hooks_json)" --arg self "$self " '
-        .hooks = ((.hooks // {}) as $h
-          | reduce ($ours | to_entries[]) as $e ($h;
-              .[$e.key] = ([(.[$e.key] // [])[] | select(any(.hooks[]?.command // ""; startswith($self)) | not)] + $e.value)))' \
-        "$SETTINGS" > "$SETTINGS.tmp" 2>/dev/null && mv -f "$SETTINGS.tmp" "$SETTINGS"; then
-        echo "voxclaude hooks installed in $SETTINGS (every Claude Code session now reports to the widget)"
-      else
-        rm -f "$SETTINGS.tmp"
-        echo "voxclaude: could not update $SETTINGS - is it valid JSON?" >&2
-        return 1
-      fi
-      ;;
-    uninstall)
-      [[ -f $SETTINGS ]] || return 0
-      if jq --arg self "$self " '
-        .hooks = ((.hooks // {}) | with_entries(
-            .value = [.value[] | select(any(.hooks[]?.command // ""; startswith($self)) | not)])
-          | with_entries(select(.value | length > 0)))
-        | if .hooks == {} then del(.hooks) else . end' \
-        "$SETTINGS" > "$SETTINGS.tmp" 2>/dev/null && mv -f "$SETTINGS.tmp" "$SETTINGS"; then
-        echo "voxclaude hooks removed from $SETTINGS"
-      else
-        rm -f "$SETTINGS.tmp"
-        echo "voxclaude: could not update $SETTINGS - is it valid JSON?" >&2
-        return 1
-      fi
-      ;;
-    status)
-      if global_hooks_installed; then echo "installed ($SETTINGS)"; else echo "not installed"; fi
-      ;;
-    *) echo "voxclaude hooks: install|uninstall|status" >&2; return 1 ;;
-  esac
 }
 
 # A session that ends without a Stop (claude stop, closed terminal, crash) must
@@ -1048,16 +993,9 @@ cmd_keybind() {
 }
 
 # Undo what the plugin put outside its own directory, and point at what is
-# left. The hooks name this script by absolute path, so they have to go before
-# the directory does: left behind, every Claude Code session on the machine
-# would run a command that is no longer there, once per tool call.
+# left.
 cmd_uninstall() {
   local file hits found=0
-  if [[ -f $SETTINGS ]] && global_hooks_installed; then
-    cmd_hooks uninstall || return 1
-  else
-    echo "voxclaude: no hooks of ours in $SETTINGS"
-  fi
   rm -rf "$RT"
   echo "voxclaude: runtime state cleared"
   for file in "$HOME/.config/omarchy/shell.json" "$HOME/.config/hypr"/*.lua \
@@ -1106,7 +1044,6 @@ case ${1:-} in
   open) cmd_open "${2:-}" ;;
   forget) cmd_forget "${2:-}" ;;
   pin) cmd_pin "${2:-}" ;;
-  hooks) cmd_hooks "${2:-status}" ;;
   list) list_json ;;
   keybind) cmd_keybind ;;
   uninstall) cmd_uninstall ;;
