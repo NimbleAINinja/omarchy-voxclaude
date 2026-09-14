@@ -3,7 +3,7 @@
 #
 #   voxclaude start              press: start recording (voxtype writes to a file)
 #   voxclaude stop               release: wait for the transcript, then dispatch
-#   voxclaude dispatch <text>    run text through Claude (background or terminal)
+#   voxclaude dispatch           run text on stdin through Claude (background or terminal)
 #   voxclaude hook needs-input   Claude Code Notification hook (stdin JSON)
 #   voxclaude hook stop          Claude Code Stop hook (stdin JSON)
 #   voxclaude hook end           Claude Code SessionEnd hook (stdin JSON)
@@ -65,6 +65,15 @@ STATUS_FILE=$RT/status
 HOOKS_FILE=$RT/hooks.json
 FEED_FILE=$RT/sessions.json
 [[ -d $SESSIONS ]] || mkdir -p "$SESSIONS"
+
+# Starting a session is one `claude --bg`, which prints its id and returns in a
+# second or two. It runs under one absolute deadline and hands back at most
+# LAUNCH_CAP bytes, so a stuck or flooding CLI can neither hold the release
+# path nor fill this shell's memory. The deadline can be lowered for tests.
+LAUNCH_DEADLINE=${VOXCLAUDE_LAUNCH_DEADLINE:-30} # seconds for the whole launch
+[[ $LAUNCH_DEADLINE =~ ^[1-9][0-9]*$ ]] || LAUNCH_DEADLINE=30
+LAUNCH_GRACE=2                                   # seconds between TERM and KILL
+LAUNCH_CAP=16384                                 # bytes of CLI output kept
 
 # ---------------------------------------------------------------- helpers
 
@@ -609,6 +618,71 @@ open_attached() { # <shortId>
   launch omarchy-launch-or-focus-tui "${argv[@]}"
 }
 
+# The first line of some CLI output, fit for a toast: control characters
+# (terminal escapes included) removed, at most 160 characters, and nothing at
+# all if it repeats the transcript, which an error message might quote.
+safe_line() { # <output> [transcript]
+  local line
+  IFS= read -r line <<< "${1:0:4096}"
+  line=$(printf '%s' "$line" | LC_ALL=C sed -E 's/\x1b\[[0-9;:?<=>]*[ -\/]*[@-~]//g; s/\x1b\][^\x07\x1b]*(\x07|\x1b\\)?//g')
+  line=${line//[[:cntrl:]]/}
+  [[ -n ${2:-} && -n ${2//[[:space:]]/} && $line == *"$(excerpt "$2" 40)"* ]] && line="(output withheld: it quoted the prompt)"
+  excerpt "$line" 160
+}
+
+# One `claude --bg`, run by timeout(1) from cmd_dispatch. timeout puts itself
+# and this child in a process group of their own, which the CLI and anything
+# it forks inherit (the Claude daemon starts its own session and is not part
+# of it), and at the deadline sends TERM to the whole group, then KILL.
+# Output reaches the caller only through head, so at most cap + 1 bytes are
+# ever read. Whatever of the group is still running once that read ends (a
+# CLI flooding past the cap, a descendant that kept the pipe or ignores TERM)
+# is ended here, TERM then KILL, before this child returns. timeout only
+# escalates to KILL while its own child runs, so this shell outlasts a TERM
+# with a no-op trap; unlike an ignored signal, a trap is not inherited.
+cmd_launch_child() { # <cap> <cwd> <argv...>  prompt on stdin, capped output on stdout
+  local cap=$1 cwd=$2 pid chunk rc=0; shift 2
+  exec 4<&0
+  exec 3< <(cd -- "$cwd" 2>&1 && exec "$@" 2>&1 <&4)
+  pid=$!
+  exec 4<&-
+  trap : TERM
+  # tr drops NUL bytes, which bash cannot hold; the trailing x keeps newlines.
+  chunk=$(LC_ALL=C tr -d '\000' <&3 | LC_ALL=C head -c $((cap + 1)); printf x)
+  exec 3<&-
+  chunk=${chunk%x}
+  printf '%s' "$chunk"
+  end_group
+  wait "$pid" 2>/dev/null || rc=$?
+  return "$rc"
+}
+
+# Every other process in this process group: TERM, a grace period for the ones
+# that exit, then KILL. Zombies are already gone and only wait to be reaped.
+end_group() {
+  local -a pids=()
+  local p i
+  group_alive() {
+    local stat
+    pids=()
+    for p in $(pgrep -g 0 2>/dev/null); do
+      [[ $p == "$$" || $p == "$PPID" ]] && continue
+      stat=$(< "/proc/$p/stat") 2>/dev/null || continue
+      [[ $stat =~ \)\ ([A-Za-z]) && ${BASH_REMATCH[1]} != Z ]] || continue
+      pids+=("$p")
+    done
+    (( ${#pids[@]} ))
+  }
+  group_alive || return 0
+  kill -TERM "${pids[@]}" 2>/dev/null
+  for (( i = 0; i < LAUNCH_GRACE * 10; i++ )); do
+    group_alive || return 0
+    read -r -t 0.1 <> <(:) 2>/dev/null || true
+  done
+  group_alive && kill -KILL "${pids[@]}" 2>/dev/null
+  return 0
+}
+
 # ---------------------------------------------------------------- commands
 
 # The microphone opens first: you are already talking, and every record
@@ -664,16 +738,23 @@ cmd_dispatch() {
   # That appended note tells Claude nobody can see this session. With a window
   # open on it, somebody can.
   (( watched )) || prompt_args=(--append-system-prompt "$VOICE_PROMPT")
-  local out short
-  # The redirect wraps the whole subshell: on claude alone, a working
-  # directory that could not be entered went to this script's stderr and the
-  # failure toast below reported it with an empty body.
-  out=$( { cd "$cwd" && claude --bg --name "voice: $(excerpt "$text" 40)" --settings "$HOOKS_FILE" \
-        --permission-mode "$mode" "${prompt_args[@]}" -- "$text"; } 2>&1 </dev/null)
+  local out short rc reason
+  # The transcript goes to Claude on stdin. As an argument it would sit in
+  # /proc/<pid>/cmdline, which any user on the machine can read, for as long
+  # as the CLI runs; printf is a builtin, so it is never an argument here
+  # either. The session name is fixed for the same reason.
+  out=$(printf '%s' "$text" | timeout -k "$LAUNCH_GRACE" "$LAUNCH_DEADLINE" \
+        "$self" launch-child "$LAUNCH_CAP" "$cwd" \
+        claude --bg --name voice --settings "$HOOKS_FILE" --permission-mode "$mode" "${prompt_args[@]}" 2>/dev/null)
+  rc=$?
   short=$(grep -oiE 'backgrounded[^0-9a-f]*[0-9a-f]{6,}' <<< "$out" | grep -oE '[0-9a-f]{6,}$' | head -1)
   if [[ -z $short ]]; then
+    if (( ${#out} > LAUNCH_CAP )); then reason="claude printed more than $LAUNCH_CAP bytes without a session id"
+    elif (( rc == 124 || rc == 137 )); then reason="claude gave no session id within ${LAUNCH_DEADLINE}s"
+    else reason=$(safe_line "$out" "$text")
+    fi
     set_status error
-    notify -u critical -t 6000 "Claude did not start" "$(head -1 <<< "$out")"
+    notify -u critical -t 6000 "Claude did not start" "$reason"
     return 1
   fi
   # The uuid and pid arrive with the session's own SessionStart hook about half
@@ -681,12 +762,14 @@ cmd_dispatch() {
   # could hang, between letting go of the key and "Working on it". Should that
   # hook have got here first, its record is kept and filled in.
   rm -f "$SESSIONS/.ignore-$short"
-  if [[ -s $SESSIONS/$short.json ]] && update_session "$short" --arg prompt "$text" --arg cwd "$cwd" --argjson now "$NOW" \
-       '.prompt = $prompt | .cwd = $cwd | .kind = "voice" | .status = "thinking" | .startedAt = $now | .updatedAt = $now'; then
+  # The transcript reaches jq through its environment, which only this user
+  # can read, never through its argv, which every user can.
+  if [[ -s $SESSIONS/$short.json ]] && VOXCLAUDE_TEXT=$text update_session "$short" --arg cwd "$cwd" --argjson now "$NOW" \
+       '.prompt = $ENV.VOXCLAUDE_TEXT | .cwd = $cwd | .kind = "voice" | .status = "thinking" | .startedAt = $now | .updatedAt = $now'; then
     :
   else
-    write_record "$short" --arg short "$short" --arg prompt "$text" --arg cwd "$cwd" --argjson now "$NOW" \
-      '{ shortId: $short, sessionId: "", prompt: $prompt, cwd: $cwd, startedAt: $now, updatedAt: $now,
+    VOXCLAUDE_TEXT=$text write_record "$short" --arg short "$short" --arg cwd "$cwd" --argjson now "$NOW" \
+      '{ shortId: $short, sessionId: "", prompt: $ENV.VOXCLAUDE_TEXT, cwd: $cwd, startedAt: $now, updatedAt: $now,
          finishedAt: 0, status: "thinking", step: "", reply: "", results: [], pinned: false, hidden: false,
          kind: "voice", window: null, pid: 0 }'
   fi
@@ -751,8 +834,9 @@ cmd_hook_stop() {
   jq -e . >/dev/null 2>&1 <<< "$results" || results='[]'
   local final=done
   has_background_tasks "$short" && final=waiting
-  update_session "$short" --arg status "$final" --arg reply "$reply" --argjson results "$results" --argjson now "$NOW" \
-    '.status = $status | .reply = $reply | .results = $results | .finishedAt = $now | .updatedAt = $now'
+  VOXCLAUDE_TEXT=$reply VOXCLAUDE_JSON=$results update_session "$short" --arg status "$final" --argjson now "$NOW" \
+    '.status = $status | .reply = $ENV.VOXCLAUDE_TEXT | .results = ($ENV.VOXCLAUDE_JSON | fromjson)
+     | .finishedAt = $now | .updatedAt = $now'
   [[ $final == done ]] || return 0
   if [[ $(session_kind "$short") == terminal ]]; then
     window_unfocused "$short" || return 0
@@ -778,8 +862,9 @@ cmd_hook_tool() {
   # A Stop fires at the end of every turn, but a background task or a typed
   # follow-up starts a new one: any tool call on a finished session means it
   # is working again.
-  update_session "$short" --argjson p "$payload" --argjson now "$NOW" '
-    def base: tostring | split("/") | last;
+  VOXCLAUDE_JSON=$payload update_session "$short" --argjson now "$NOW" '
+    ($ENV.VOXCLAUDE_JSON | fromjson) as $p
+    | def base: tostring | split("/") | last;
     def excerpt($n): gsub("\\s+"; " ") | ltrimstr(" ") | rtrimstr(" ") | if length > $n then .[:$n - 1] + "…" else . end;
     ($p.tool_name // "") as $t | ($p.tool_input // {}) as $i
     | (if $t == "Bash" then "Running: " + (($i.description // "") | if . == "" then ($i.command // "") else . end)
@@ -805,8 +890,9 @@ cmd_hook_prompt() {
   # Task notifications and other injected turns arrive as "<...>" prompts;
   # they are not what the user asked for.
   [[ $title == "<"* ]] && title=""
-  update_session "$short" --arg title "$title" --argjson now "$NOW" \
-    '.step = "" | .updatedAt = $now
+  VOXCLAUDE_TEXT=$title update_session "$short" --argjson now "$NOW" \
+    '$ENV.VOXCLAUDE_TEXT as $title
+     | .step = "" | .updatedAt = $now
      | if .prompt == "" and $title != "" then .prompt = $title else . end
      | '"$REVIVE_FILTER"
 }
@@ -1029,7 +1115,9 @@ cmd_status() {
 case ${1:-} in
   start) cmd_start ;;
   stop) cmd_stop ;;
-  dispatch) cmd_dispatch "${2:-}" ;;
+  # The text comes on stdin: an argument would show in every process listing.
+  dispatch) cmd_dispatch "$(head -c "$LAUNCH_CAP")" ;;
+  launch-child) shift; cmd_launch_child "$@" ;;
   hook)
     case ${2:-} in
       needs-input) cmd_hook_needs_input ;;

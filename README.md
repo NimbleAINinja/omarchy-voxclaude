@@ -149,7 +149,7 @@ Set on the widget's entry in `shell.json`, or from the bar settings UI:
 ```
 Super+D down   voxclaude start     voxtype record start --file=$RT/prompt.txt
 Super+D up     voxclaude stop      voxtype record stop --wait  →  transcript
-                                   claude --bg --settings $RT/hooks.json -- "<text>"
+                                   claude --bg --settings $RT/hooks.json  <<< "<text>"
                                    └─ said a terminal word → foot window: claude attach <shortId>
 Claude hooks   SessionStart       → voxclaude hook start       → session id and pid onto the record
                PreToolUse         → voxclaude hook tool        → progress line; done → busy again
@@ -173,6 +173,21 @@ watches), `sessions/<shortId>.json` (one record per session), `sessions.json`
 (all records, newest first, rewritten on every change and watched by the
 widget), `hooks.json` (the session-scoped Claude hooks) and voxtype's
 `prompt.txt`.
+
+Any local user can read another user's process command lines in
+`/proc/<pid>/cmdline`, so a transcript is never an argument to `claude` or
+`jq`. Claude gets the prompt on stdin, the session is named plain `voice`, and
+prompts and replies reach `jq` through its environment, which only you can
+read. The
+launch runs under `timeout` with one 30-second deadline for the whole process
+group. At most 16 KiB of the CLI's output is ever read, and anything still
+running once that read ends is stopped, TERM then KILL. A stuck or flooding
+CLI therefore turns into an error toast. That toast carries one line of
+output, stripped of terminal escapes and cut to 160 characters, and withheld
+entirely when it quotes the prompt. Toasts are the one exception to the
+argument rule: `omarchy-notification-send` takes its text as arguments, so the
+first 120 characters of a prompt ("Working on it", "Claude needs you") or 200
+of a reply are visible for the few milliseconds that command runs.
 
 A `PreToolUse` hook blocks the tool call that fired it, so the script keeps
 that path cheap: four `jq` calls per hook whatever the backlog. One reads the payload, one checks the record, one
@@ -277,7 +292,7 @@ tests/run          # manifest, node unit tests, bash stub tests, QML tests, qmll
 omarchy restart shell   # plugin QML does not hot-reload on Omarchy 4
 omarchy-shell io.github.nimbleaininja.voxclaude toggle
 omarchy-shell io.github.nimbleaininja.voxclaude status
-bin/voxclaude dispatch "reply with pong"   # exercise the pipeline without a microphone
+echo "reply with pong" | bin/voxclaude dispatch   # exercise the pipeline without a microphone
 bin/voxclaude list | jq                    # the session records
 bin/voxclaude keybind                      # the hold key the widget will name
 ```

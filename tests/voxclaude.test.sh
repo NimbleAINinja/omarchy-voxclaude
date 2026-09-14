@@ -14,6 +14,7 @@ export LOG="$tmp/calls.log"
 export VOXTYPE_STOP_EXIT=0
 export VOXTYPE_START_EXIT=0
 export VOXTYPE_TEXT="hello there"
+export CLAUDE_STDIN="$tmp/claude-stdin"
 mkdir -p "$HOME/.config/omarchy" "$HOME/.claude" "$XDG_RUNTIME_DIR" "$tmp/bin" "$HOME/Work" "$HOME/Proj"
 # The stubs create it on first use; without it an early not_called greps a
 # file that is not there yet and prints an error while returning the right
@@ -35,7 +36,25 @@ make_stub claude '
 case "$1" in
   wrap) shift; "$@" ;;
   -p) shift; [[ $1 == wrap ]] && { shift; "$@"; } ;;
-  --bg) echo "Starting background service…"; echo "backgrounded · abcd1234 · voice"; echo "  claude attach abcd1234" ;;
+  --bg)
+    cat > "$CLAUDE_STDIN"
+    # Look for the transcript in every process command line while this
+    # launch is running. The pattern comes from a file: as an argument it
+    # would find itself.
+    if [[ -n ${CANARY_FILE:-} ]]; then
+      hits=0
+      for f in /proc/[0-9]*/cmdline; do
+        tr "\0" " " < "$f" 2>/dev/null | grep -qFf "$CANARY_FILE" && hits=$((hits + 1))
+      done
+      echo "$hits" > "$CANARY_FILE.hits"
+    fi
+    case ${CLAUDE_BG:-ok} in
+      flood) trap "" PIPE TERM; while :; do printf "%s\n" "flooding the launcher with output"; done 2>/dev/null ;;
+      hang) bash -c "trap \"\" TERM; exec -a voxclaude-test-straggler sleep 600" & trap "" TERM; sleep 600 ;;
+      quote) printf "\033[31mError: could not start: %s\033[0m\n" "$(cat "$CLAUDE_STDIN")"; exit 1 ;;
+      long) printf "\033[31mError:\033[0m %0300d\n" 0; exit 1 ;;
+      *) echo "Starting background service…"; echo "backgrounded · abcd1234 · voice"; echo "  claude attach abcd1234" ;;
+    esac ;;
   rm) ;;
   agents) echo "[{\"id\":\"abcd1234\",\"kind\":\"background\",\"sessionId\":\"abcd1234-0000-4000-8000-000000000000\",\"status\":\"busy\",\"pid\":${CLAUDE_STUB_PID:-0}},{\"id\":null,\"kind\":\"interactive\",\"sessionId\":\"ffff1234-0000-4000-8000-000000000000\",\"name\":\"work-1\",\"status\":\"busy\",\"pid\":$$}]" ;;
 esac'
@@ -108,7 +127,9 @@ check "start while recording acts as stop" called $'voxtype\t.*\trecord stop'
 
 # ---- dispatch: headless -------------------------------------------------
 reset; VOXTYPE_TEXT="create hello.txt with hi" "$script" stop
-check "headless launches claude --bg in the default cwd" called $'claude\t'"$HOME/Work"$'\t--bg .*--permission-mode auto .*-- create hello.txt with hi'
+check "headless launches claude --bg in the default cwd" called $'claude\t'"$HOME/Work"$'\t--bg .*--permission-mode auto'
+check "the prompt reaches claude on stdin" test "$(cat "$CLAUDE_STDIN")" = "create hello.txt with hi"
+check "the prompt is never a claude argument" not_called $'^claude\t.*hello.txt'
 check "headless passes the hooks settings file" called -- '--settings '"$RT/hooks.json"
 check "hooks.json points Stop at this script" bash -c "jq -e --arg s \"$script hook stop\" '.hooks.Stop[0].hooks[0].command == \$s' '$RT/hooks.json' >/dev/null"
 check "hooks.json ends sessions through this script" bash -c "jq -e --arg s \"$script hook end\" '.hooks.SessionEnd[0].hooks[0].command == \$s' '$RT/hooks.json' >/dev/null"
@@ -120,6 +141,51 @@ check "headless toast names the prompt" called $'omarchy-notification-send\t.*cr
 check "headless tells Claude it was launched by voice" called -- '--append-system-prompt .*cannot see'
 check "dispatch publishes the sessions feed" bash -c "jq -e 'length == 1 and .[0].shortId == \"abcd1234\" and .[0].step == \"\"' '$RT/sessions.json' >/dev/null"
 check "a headless session is told nobody is watching" called '--append-system-prompt'
+
+# ---- launch supervision -----------------------------------------------------
+# The transcript must not appear in any process command line while claude runs.
+reset; canary="canary-$RANDOM$RANDOM-$$"
+printf '%s\n' "$canary" > "$tmp/canary"
+CANARY_FILE="$tmp/canary" VOXTYPE_TEXT="remember $canary for later" "$script" stop
+check "a canary transcript reaches claude" grep -qF "$canary" "$CLAUDE_STDIN"
+check "a canary transcript is in no process argv during the launch" test "$(cat "$tmp/canary.hits")" = 0
+check "the canary still reaches the session record" bash -c "jq -e --arg c 'remember $canary for later' '.prompt == \$c' '$RT/sessions/abcd1234.json' >/dev/null"
+rm -f "$tmp/canary" "$tmp/canary.hits"
+
+# Live stub processes of a launch (zombies waiting for a reaper are not live).
+stub_left() {
+  local i
+  for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+    ps -eo stat=,args= | awk '$1 !~ /^Z/' | grep -E "voxclaude-test-straggler|$tmp/bin/claude --bg" | grep -qv grep || return 1
+    sleep 0.2
+  done
+  return 0
+}
+
+# A CLI that floods its output is cut off at the cap, at once, not at the deadline.
+reset; t0=$EPOCHSECONDS
+CLAUDE_BG=flood VOXCLAUDE_LAUNCH_DEADLINE=60 VOXTYPE_TEXT="flood me" "$script" stop || true
+check "an output flood ends well before the deadline" test $((EPOCHSECONDS - t0)) -le 10
+check "an output flood is an error" test "$(status)" = error
+check "an output flood says so in the toast" called $'omarchy-notification-send\t.*more than 16384 bytes'
+check "an output flood leaves no process behind" test "$(stub_left && echo left || echo clean)" = clean
+
+# A CLI that never answers, with a descendant that holds the pipe and ignores
+# TERM, is ended at the deadline, the descendant with it.
+reset; t0=$EPOCHSECONDS
+CLAUDE_BG=hang VOXCLAUDE_LAUNCH_DEADLINE=2 VOXTYPE_TEXT="hang please" "$script" stop || true
+check "a hung launch returns soon after its deadline" test $((EPOCHSECONDS - t0)) -le 8
+check "a hung launch is an error" test "$(status)" = error
+check "a hung launch names the deadline" called $'omarchy-notification-send\t.*no session id within 2s'
+check "a hung launch leaves no TERM-ignoring descendant" test "$(stub_left && echo left || echo clean)" = clean
+
+# Failure toasts carry one bounded, cleaned line, and never the transcript.
+reset; CLAUDE_BG=quote VOXTYPE_TEXT="my secret is hunter2" "$script" stop || true
+check "a failure that quotes the prompt withholds it" called $'omarchy-notification-send\t.*output withheld'
+check "a failure toast never repeats the transcript" not_called $'omarchy-notification-send\t.*hunter2'
+reset; CLAUDE_BG=long VOXTYPE_TEXT="anything" "$script" stop || true
+check "a failure toast has no terminal escapes" not_called $'omarchy-notification-send\t.*\e'
+check "a failure toast is cut to 160 characters" bash -c "line=\$(grep 'Claude did not start' '$LOG'); body=\${line#*Claude did not start }; (( \${#body} <= 160 )) && [[ \$body == Error:* ]]"
 
 # ---- dispatch: terminal ---------------------------------------------------
 # A terminal word opens a window on the session; the session itself still
@@ -585,7 +651,7 @@ check "stop with a known pid still finishes the session" bash -c "jq -e '.status
 { pkill -P "$wrapper" || true; kill "$wrapper" || true; } 2>/dev/null
 disown "$wrapper" 2>/dev/null || true
 : > "$tmp/jq-dispatch"
-JQ_COUNT="$tmp/jq-dispatch" PATH="$tmp/countbin:$PATH" "$script" dispatch "budget check" >/dev/null 2>&1 || true
+JQ_COUNT="$tmp/jq-dispatch" PATH="$tmp/countbin:$PATH" "$script" dispatch <<< "budget check" >/dev/null 2>&1 || true
 check "dispatch reads all its settings in one pass (at most 6 jq calls)" test "$(wc -l < "$tmp/jq-dispatch")" -le 6
 
 # ---- the mic opens before any housekeeping -----------------------------------------
