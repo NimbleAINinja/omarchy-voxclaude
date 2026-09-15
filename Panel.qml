@@ -88,9 +88,12 @@ Panel {
     root.close()
   }
 
+  // The command line names the session and the result's position, never the
+  // URL or path: bin/voxclaude reads the value from the private record.
   function openResult(value) {
-    if (value === "") return
-    Quickshell.execDetached([root.tool, "open", value])
+    var ref = Model.resultRef(root.sessions, value)
+    if (!ref) return
+    Quickshell.execDetached([root.tool, "open", ref.shortId, String(ref.index)])
     root.close()
   }
 

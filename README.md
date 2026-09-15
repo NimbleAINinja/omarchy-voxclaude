@@ -21,8 +21,8 @@ you were doing.
 
 **Agents run in the background. Drop in whenever you like.** Every request
 starts a real `claude --bg` session that belongs to the Claude daemon, not to a
-window. You get a toast when it starts and a toast with the reply when it is
-done, and in between the bar shows what Claude is doing right now: "Running:
+window. You get a toast when it starts and another when it is done, the
+reply waits in the popover, and in between the bar shows what Claude is doing right now: "Running:
 npm test", "Editing Gallery.tsx". Want to watch, steer, or take over? Click the
 row and a terminal opens attached to the live session. Close it again and the
 work carries on. If Claude needs you, for a permission, a question, or a tool
@@ -50,9 +50,9 @@ Claude Code configuration.
 4. If Claude needs you, the critter turns urgent, a toast says "Claude needs
    you", and a terminal opens on the session. Answer, then close the window or
    leave it open. The session does not care.
-5. When Claude finishes, the critter blinks green three times and a toast shows
-   the reply. Click the toast to open the result, or the conversation if there
-   is nothing to open.
+5. When Claude finishes, the critter blinks green three times and a toast says
+   "Claude is done". The reply is in the popover. Click the toast to open the
+   result, or the conversation if there is nothing to open.
 
 Voice sessions get a short appended system prompt telling Claude it was
 started from a widget the user cannot see, so replies stay short and name
@@ -171,8 +171,8 @@ bar widget reads `$XDG_RUNTIME_DIR/voxclaude` only; the fallback is for the
 CLI outside a login session. `$RT` holds `status` (one word the widget
 watches), `sessions/<shortId>.json` (one record per session), `sessions.json`
 (all records, newest first, rewritten on every change and watched by the
-widget), `hooks.json` (the session-scoped Claude hooks) and voxtype's
-`prompt.txt`.
+widget), `hooks.json` (the session-scoped Claude hooks), voxtype's `prompt.txt`, and
+`launch.log` (what a failed `claude --bg` printed).
 
 Any local user can read another user's process command lines in
 `/proc/<pid>/cmdline`, so a transcript is never an argument to `claude` or
@@ -182,12 +182,21 @@ read. The
 launch runs under `timeout` with one 30-second deadline for the whole process
 group. At most 16 KiB of the CLI's output is ever read, and anything still
 running once that read ends is stopped, TERM then KILL. A stuck or flooding
-CLI therefore turns into an error toast. That toast carries one line of
-output, stripped of terminal escapes and cut to 160 characters, and withheld
-entirely when it quotes the prompt. Toasts are the one exception to the
-argument rule: `omarchy-notification-send` takes its text as arguments, so the
-first 120 characters of a prompt ("Working on it", "Claude needs you") or 200
-of a reply are visible for the few milliseconds that command runs.
+CLI therefore turns into an error toast. That toast names only the kind of
+failure (the byte cap, the deadline, or an exit status); what the CLI printed
+may quote the prompt, so it goes to `launch.log` in the runtime directory
+instead.
+
+Toasts follow the same rule. `omarchy-notification-send` takes its text as
+arguments, so every toast is fixed wording ("Working on it", "Claude needs
+you", "Claude is done") and never carries the prompt, the reply, or a result.
+The click action names a session and a result by position (`voxclaude open
+<shortId> 0`), and the script reads the URL or path from the private record
+only when you click; the popover's result chips work the same way. Handing
+that one value to `xdg-open` at that moment is what opening it means. The
+test suite runs a voice and a terminal session with canary prompt, reply and
+URL values while logging the command line of every process spawned, and fails
+if any of them shows up.
 
 A `PreToolUse` hook blocks the tool call that fired it, so the script keeps
 that path cheap: four `jq` calls per hook whatever the backlog. One reads the payload, one checks the record, one
@@ -235,8 +244,8 @@ pulls a laptop out from behind his back and types while Claude works.
   A session you started yourself in your own terminal is an ordinary
   interactive one and does end with its window.
 - Nothing heard (voxtype exit 3) → quiet toast, back to idle.
-- voxtype daemon down or Claude not logged in → error glyph plus a toast with
-  the first line of stderr. `voxclaude status` prints the current word.
+- voxtype daemon down or Claude not logged in → error glyph plus a toast
+  naming the failure; a launch's own output is in `launch.log`. `voxclaude status` prints the current word.
 - Records older than a day are pruned (with their lock files), both after the
   microphone opens when you hold the key and, at most once an hour, from the
   hooks themselves. Pinned rows are exempt. The bar status is recomputed from the
@@ -247,8 +256,7 @@ pulls a laptop out from behind his back and types while Claude works.
   hidden session that ends up needing you is listed again, because waiting out
   of sight for someone who cannot see it is worse than an unwanted row.
 - A reply that says only that there is no file or URL to point at ("No file or
-  URL for this one.") has that sentence dropped before it reaches a toast or a
-  row.
+  URL for this one.") has that sentence dropped before it reaches a row.
 - Clicking a row seems to do nothing: the attach window opened as a tile
   behind your floating or maximized terminal. Add the window rules from the
   Install section.

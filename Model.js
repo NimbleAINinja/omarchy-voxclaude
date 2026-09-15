@@ -616,6 +616,25 @@ function resultLabel(result) {
   return segments.slice(-2).join("/")
 }
 
+// Which session and which of its results a chip stands for. A chip click
+// hands bin/voxclaude those two instead of the URL or path itself: argv is
+// readable by every local user, and the script looks the value up in the
+// user's own record.
+function resultRef(list, value) {
+  var items = toList(list) || []
+  var wanted = String(value || "")
+  if (wanted === "") return null
+  for (var i = 0; i < items.length; i++) {
+    var session = items[i]
+    var results = toList(session && session.results) || []
+    for (var j = 0; j < results.length; j++) {
+      if (String(results[j] && results[j].value || "") === wanted && session.shortId)
+        return { shortId: String(session.shortId), index: j }
+    }
+  }
+  return null
+}
+
 if (typeof module !== "undefined" && module.exports) {
   module.exports = {
     toList: toList, statusLabel: statusLabel, emptyHint: emptyHint, statusTone: statusTone,
@@ -626,6 +645,7 @@ if (typeof module !== "undefined" && module.exports) {
     isLit: isLit, litCount: litCount,
     spriteFrame: spriteFrame, spriteInterval: spriteInterval,
     laptopOpen: laptopOpen, keepsTick: keepsTick, laptopFrame: laptopFrame, laptopInterval: laptopInterval,
-    elapsed: elapsed, isRunning: isRunning, rowSubtitle: rowSubtitle, rowStep: rowStep, resultLabel: resultLabel
+    elapsed: elapsed, isRunning: isRunning, rowSubtitle: rowSubtitle, rowStep: rowStep, resultLabel: resultLabel,
+    resultRef: resultRef
   }
 }

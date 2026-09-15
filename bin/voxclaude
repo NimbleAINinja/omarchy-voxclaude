@@ -9,7 +9,7 @@
 #   voxclaude hook end           Claude Code SessionEnd hook (stdin JSON)
 #   voxclaude hook tool          Claude Code PreToolUse hook (stdin JSON): progress line
 #   voxclaude hook prompt        Claude Code UserPromptSubmit hook: session is busy again
-#   voxclaude open <url|path>    open a result with xdg-open
+#   voxclaude open <id> <n>      open result n of a session with xdg-open
 #   voxclaude forget <id>        hide a session's row (the session keeps running)
 #   voxclaude pin <id>           toggle a record's pin (kept at the top, never pruned)
 #   voxclaude hook start         Claude Code SessionStart hook: fill in the record
@@ -21,8 +21,9 @@
 #
 # State lives in $XDG_RUNTIME_DIR/voxclaude (mode 0700): status (one word), recording
 # (marker while the key is held), prompt.txt (voxtype's transcript),
-# hooks.json (session-scoped Claude hooks), sessions/<shortId>.json and
-# sessions.json (the aggregated feed the bar widget watches).
+# hooks.json (session-scoped Claude hooks), sessions/<shortId>.json,
+# sessions.json (the aggregated feed the bar widget watches) and launch.log
+# (what a failed `claude --bg` printed).
 set -uo pipefail
 
 PLUGIN_ID=io.github.nimbleaininja.voxclaude
@@ -208,6 +209,11 @@ has_background_tasks() { # <shortId>
   pgrep -P "$pid" -f 'shell-snapshots' >/dev/null 2>&1
 }
 
+# omarchy-notification-send takes its text as arguments, and any local user can
+# read a process's arguments in /proc/<pid>/cmdline. So a toast only ever
+# carries fixed wording and a session's short id: never the prompt, the reply,
+# a result, or output that might quote them. The text itself stays in the
+# session record, and a click resolves the rest from there.
 notify() { omarchy-notification-send "$@" >/dev/null 2>&1 </dev/null; }
 
 # Markdown → prose, mirroring Model.plainText: drop code fences and ticks,
@@ -618,18 +624,6 @@ open_attached() { # <shortId>
   launch omarchy-launch-or-focus-tui "${argv[@]}"
 }
 
-# The first line of some CLI output, fit for a toast: control characters
-# (terminal escapes included) removed, at most 160 characters, and nothing at
-# all if it repeats the transcript, which an error message might quote.
-safe_line() { # <output> [transcript]
-  local line
-  IFS= read -r line <<< "${1:0:4096}"
-  line=$(printf '%s' "$line" | LC_ALL=C sed -E 's/\x1b\[[0-9;:?<=>]*[ -\/]*[@-~]//g; s/\x1b\][^\x07\x1b]*(\x07|\x1b\\)?//g')
-  line=${line//[[:cntrl:]]/}
-  [[ -n ${2:-} && -n ${2//[[:space:]]/} && $line == *"$(excerpt "$2" 40)"* ]] && line="(output withheld: it quoted the prompt)"
-  excerpt "$line" 160
-}
-
 # One `claude --bg`, run by timeout(1) from cmd_dispatch. timeout puts itself
 # and this child in a process group of their own, which the CLI and anything
 # it forks inherit (the Claude daemon starts its own session and is not part
@@ -697,7 +691,7 @@ cmd_start() {
     prune
   else
     set_status error
-    notify -u critical -t 5000 "voxtype is not recording" "$(head -1 "$RT/stderr" 2>/dev/null)"
+    notify -u critical -t 5000 "voxtype is not recording" "Is the voxtype daemon running?"
     return 1
   fi
 }
@@ -712,7 +706,7 @@ cmd_stop() {
   case $rc in
     0) cmd_dispatch "$text" ;;
     3) release_status; notify -u low -t 2500 "Nothing heard" ;;
-    *) set_status error; notify -u critical -t 5000 "Transcription failed" "$(head -1 "$RT/stderr" 2>/dev/null)"; return 1 ;;
+    *) set_status error; notify -u critical -t 5000 "Transcription failed" "voxtype exited with status $rc"; return 1 ;;
   esac
 }
 
@@ -749,9 +743,12 @@ cmd_dispatch() {
   rc=$?
   short=$(grep -oiE 'backgrounded[^0-9a-f]*[0-9a-f]{6,}' <<< "$out" | grep -oE '[0-9a-f]{6,}$' | head -1)
   if [[ -z $short ]]; then
+    # The output may quote the prompt, so it goes to the private runtime
+    # directory for a look later, and the toast says only what kind of failure.
+    atomic_write "$RT/launch.log" "${out:0:$LAUNCH_CAP}"
     if (( ${#out} > LAUNCH_CAP )); then reason="claude printed more than $LAUNCH_CAP bytes without a session id"
     elif (( rc == 124 || rc == 137 )); then reason="claude gave no session id within ${LAUNCH_DEADLINE}s"
-    else reason=$(safe_line "$out" "$text")
+    else reason="claude exited with status $rc (output in launch.log)"
     fi
     set_status error
     notify -u critical -t 6000 "Claude did not start" "$reason"
@@ -776,7 +773,7 @@ cmd_dispatch() {
   set_status thinking
   # A window opening is announcement enough; a toast on top of it is noise.
   if (( watched )); then open_attached "$short"
-  else notify -u low -t 3000 -g "$ROBOT" "Working on it" "$(excerpt "$text" 120)"
+  else notify -u low -t 3000 -g "$ROBOT" "Working on it" "Claude has your request"
   fi
 }
 
@@ -789,12 +786,12 @@ cmd_hook_needs_input() {
     window_unfocused "$short" || return 0
     addr=$(session_window "$short")
     window_exists "$addr" && focus_window "$addr"
-    notify -u normal -t 4000 -g "$ROBOT" "Claude needs you" "$(jq -r '.prompt' "$(session_file "$short")" | head -c 120)" \
+    notify -u normal -t 4000 -g "$ROBOT" "Claude needs you" "A terminal session is waiting for your answer" \
       --exec "$self" attach "$short"
     return 0
   fi
   open_attached "$short"
-  notify -u normal -t 4000 -g "$ROBOT" "Claude needs you" "$(jq -r '.prompt' "$(session_file "$short")" | head -c 120)"
+  notify -u normal -t 4000 -g "$ROBOT" "Claude needs you" "Its terminal is open"
 }
 
 # URLs and existing file paths mentioned in the reply, as {kind, value} records
@@ -825,7 +822,7 @@ find_results() { # <reply> <cwd>
 }
 
 cmd_hook_stop() {
-  local payload short sid hook_cwd message reply results cwd argv first_kind first_value
+  local payload short sid hook_cwd message reply results cwd argv
   read_hook || return 0
   message=$(jq -r '.last_assistant_message // ""' <<< "$payload")
   reply=$(excerpt "$(drop_no_result "$(plain_text "$message")")" 2000)
@@ -840,16 +837,16 @@ cmd_hook_stop() {
   [[ $final == done ]] || return 0
   if [[ $(session_kind "$short") == terminal ]]; then
     window_unfocused "$short" || return 0
-    notify -u normal -t 15000 -g "$ROBOT" "Claude" "$(excerpt "$reply" 200)" --exec "$self" attach "$short"
+    notify -u normal -t 15000 -g "$ROBOT" "Claude is done" "Click to go back to its terminal" --exec "$self" attach "$short"
     return 0
   fi
-  first_kind=$(jq -r '.[0].kind // empty' <<< "$results")
-  first_value=$(jq -r '.[0].value // empty' <<< "$results")
-  if [[ -n $first_kind ]]; then
-    notify -u normal -t 15000 -g "$ROBOT" "Claude" "$(excerpt "$reply" 200)" --exec xdg-open "$first_value"
+  # The reply is in the popover row; a click opens the result it points at,
+  # looked up by position when clicked, or else the conversation.
+  if [[ $results != "[]" ]]; then
+    notify -u normal -t 15000 -g "$ROBOT" "Claude is done" "Click to open the result" --exec "$self" open "$short" 0
   else
     mapfile -t argv < <(attach_cmd "$short")
-    notify -u normal -t 15000 -g "$ROBOT" "Claude" "$(excerpt "$reply" 200)" --exec omarchy-launch-tui "${argv[@]}"
+    notify -u normal -t 15000 -g "$ROBOT" "Claude is done" "Click to see the reply" --exec omarchy-launch-tui "${argv[@]}"
   fi
 }
 
@@ -921,7 +918,16 @@ cmd_hook_end() {
   update_session "$short" 'if .status == "done" then . else .status = "stopped" end'
 }
 
-cmd_open() { [[ -n ${1:-} ]] && launch xdg-open "$1"; }
+# A result is named by its session and position, never by value, so the URL or
+# path is not on this command's line (the toast action and the widget's chip
+# both call it). xdg-open is handed the value itself: opening it is the point.
+cmd_open() { # <shortId> <index>
+  local short=${1:-} index=${2:-} value
+  [[ $short =~ ^[A-Za-z0-9]+$ && $index =~ ^[0-9]+$ && -f $SESSIONS/$short.json ]] || return 1
+  value=$(jq -r --argjson i "$index" '.results[$i].value // empty' "$SESSIONS/$short.json" 2>/dev/null)
+  [[ -n $value ]] || return 1
+  launch xdg-open "$value"
+}
 
 # Hiding a row takes it out of the list and nothing else. The session keeps
 # running, its hooks keep updating the record it still has - so it never comes
@@ -1129,7 +1135,7 @@ case ${1:-} in
       *) echo "voxclaude hook: start|needs-input|stop|end|tool|prompt" >&2; exit 1 ;;
     esac ;;
   attach) cmd_attach "${2:-latest}" ;;
-  open) cmd_open "${2:-}" ;;
+  open) cmd_open "${2:-}" "${3:-}" ;;
   forget) cmd_forget "${2:-}" ;;
   pin) cmd_pin "${2:-}" ;;
   list) list_json ;;

@@ -381,3 +381,15 @@ test("litCount counts lit cells without building a list of them", () => {
     assert.equal(Model.litCount(Model.LAPTOP_FRAMES[name]), byHand(Model.LAPTOP_FRAMES[name]), name)
   }
 })
+
+test("resultRef names a chip by session and position, not by its value", () => {
+  const sessions = [
+    { shortId: "aaaa1111", results: [{ kind: "url", value: "https://a.example/x" }] },
+    { shortId: "bbbb2222", results: [{ kind: "path", value: "/tmp/one" }, { kind: "url", value: "https://b.example/y" }] }
+  ]
+  assert.deepEqual(Model.resultRef(sessions, "https://b.example/y"), { shortId: "bbbb2222", index: 1 })
+  assert.deepEqual(Model.resultRef(sessions, "https://a.example/x"), { shortId: "aaaa1111", index: 0 })
+  assert.equal(Model.resultRef(sessions, "https://nowhere.example/"), null)
+  assert.equal(Model.resultRef(sessions, ""), null)
+  assert.equal(Model.resultRef(null, "x"), null)
+})

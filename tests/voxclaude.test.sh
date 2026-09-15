@@ -119,7 +119,8 @@ check "stop removes the marker" test ! -f "$RT/recording"
 reset; "$script" start; : > "$LOG"
 VOXTYPE_STOP_EXIT=1 "$script" stop || true
 check "transcription failure -> error" test "$(status)" = error
-check "transcription failure notifies with stderr" called $'omarchy-notification-send\t.*daemon exploded'
+check "transcription failure notifies" called $'omarchy-notification-send\t.*Transcription failed.*status 1'
+check "transcription failure keeps voxtype's stderr out of the toast" not_called $'omarchy-notification-send\t.*daemon exploded'
 
 reset; "$script" start; : > "$LOG"
 "$script" start
@@ -137,7 +138,8 @@ check "hooks.json watches the needs-input notifications" bash -c "jq -e '.hooks.
 check "session record written under the short id" test -f "$RT/sessions/abcd1234.json"
 check "session record carries prompt and status" bash -c "jq -e '.shortId == \"abcd1234\" and .prompt == \"create hello.txt with hi\" and .status == \"thinking\" and (.startedAt > 0)' '$RT/sessions/abcd1234.json' >/dev/null"
 check "headless sets status thinking" test "$(status)" = thinking
-check "headless toast names the prompt" called $'omarchy-notification-send\t.*create hello.txt'
+check "headless toast says Claude is working" called $'omarchy-notification-send\t.*Working on it'
+check "headless toast never names the prompt" not_called $'omarchy-notification-send\t.*hello.txt'
 check "headless tells Claude it was launched by voice" called -- '--append-system-prompt .*cannot see'
 check "dispatch publishes the sessions feed" bash -c "jq -e 'length == 1 and .[0].shortId == \"abcd1234\" and .[0].step == \"\"' '$RT/sessions.json' >/dev/null"
 check "a headless session is told nobody is watching" called '--append-system-prompt'
@@ -179,13 +181,13 @@ check "a hung launch is an error" test "$(status)" = error
 check "a hung launch names the deadline" called $'omarchy-notification-send\t.*no session id within 2s'
 check "a hung launch leaves no TERM-ignoring descendant" test "$(stub_left && echo left || echo clean)" = clean
 
-# Failure toasts carry one bounded, cleaned line, and never the transcript.
+# Failure toasts say what kind of failure it was and nothing the CLI printed,
+# which may quote the prompt. That output is kept in the private runtime dir.
 reset; CLAUDE_BG=quote VOXTYPE_TEXT="my secret is hunter2" "$script" stop || true
-check "a failure that quotes the prompt withholds it" called $'omarchy-notification-send\t.*output withheld'
+check "a failed launch names its exit status" called $'omarchy-notification-send\t.*Claude did not start claude exited with status 1'
 check "a failure toast never repeats the transcript" not_called $'omarchy-notification-send\t.*hunter2'
-reset; CLAUDE_BG=long VOXTYPE_TEXT="anything" "$script" stop || true
-check "a failure toast has no terminal escapes" not_called $'omarchy-notification-send\t.*\e'
-check "a failure toast is cut to 160 characters" bash -c "line=\$(grep 'Claude did not start' '$LOG'); body=\${line#*Claude did not start }; (( \${#body} <= 160 )) && [[ \$body == Error:* ]]"
+check "a failure toast carries none of the CLI output" not_called $'omarchy-notification-send\t.*could not start'
+check "the CLI output is kept in the private launch.log" grep -q 'could not start: my secret is hunter2' "$RT/launch.log"
 
 # ---- dispatch: terminal ---------------------------------------------------
 # A terminal word opens a window on the session; the session itself still
@@ -257,11 +259,12 @@ check "unknown session is ignored" not_called omarchy-launch-or-focus-tui
 printf '%s' '{"session_id":"abcd1234-0000-4000-8000-000000000000","hook_event_name":"Stop","last_assistant_message":"I created   hello.txt\nwith the text hi."}' | "$script" hook stop
 check "stop marks the session done with the reply" bash -c "jq -e '.status == \"done\" and .reply == \"I created hello.txt with the text hi.\"' '$RT/sessions/abcd1234.json' >/dev/null"
 check "stop returns the bar to idle" test "$(status)" = idle
-check "stop toast carries the reply and attaches on click" called $'omarchy-notification-send\t.*I created hello.txt.*--exec omarchy-launch-tui --app-id=org.omarchy.voxclaude.abcd1234 claude attach abcd1234'
+check "stop toast attaches to the conversation on click" called $'omarchy-notification-send\t.*Claude is done Click to see the reply --exec omarchy-launch-tui --app-id=org.omarchy.voxclaude.abcd1234 claude attach abcd1234'
+check "stop toast never carries the reply" not_called $'omarchy-notification-send\t.*hello.txt'
 : > "$LOG"
 printf '%s' '{"session_id":"abcd1234-0000-4000-8000-000000000000","hook_event_name":"Stop","last_assistant_message":"**Merged.** Run `npm test`, then see [the PR](https://github.com/x/y/pull/1).\n- one\n- two"}' | "$script" hook stop
 check "stored reply is plain text" bash -c "jq -e '.reply == \"Merged. Run npm test, then see the PR. one two\"' '$RT/sessions/abcd1234.json' >/dev/null"
-check "toast shows plain text" called $'omarchy-notification-send\t.*Claude Merged. Run npm test, then see the PR. one two'
+check "the toast carries neither the reply nor its link" not_called $'omarchy-notification-send\t.*\\(Merged\\|github.com\\)'
 check "results still come from the raw reply" bash -c "jq -e '.results[0].value == \"https://github.com/x/y/pull/1\"' '$RT/sessions/abcd1234.json' >/dev/null"
 
 # ---- session end ----------------------------------------------------------
@@ -339,9 +342,16 @@ unset CLAUDE_STUB_PID
 printf '%s' "{\"session_id\":\"abcd1234-0000-4000-8000-000000000000\",\"hook_event_name\":\"Stop\",\"last_assistant_message\":\"Built it. Run npm run dev and open http://localhost:5173/ in a browser. The entry file is plants/index.html, notes are in $HOME/notes.md, and/or missing/file.txt is not there.\"}" | "$script" hook stop
 check "stop extracts urls and existing paths as results" bash -c "jq -e '.results == [{kind:\"url\",value:\"http://localhost:5173/\"},{kind:\"path\",value:\"$HOME/Work/plants/index.html\"},{kind:\"path\",value:\"$HOME/notes.md\"}]' '$RT/sessions/abcd1234.json' >/dev/null"
 check "stop records when it finished" bash -c "jq -e '.finishedAt > 0' '$RT/sessions/abcd1234.json' >/dev/null"
-check "stop toast opens the first result on click" called $'omarchy-notification-send\t.*--exec xdg-open http://localhost:5173/$'
-: > "$LOG"; "$script" open "http://localhost:5173/"
-check "open hands a result to xdg-open" called $'xdg-open\t.*\thttp://localhost:5173/'
+check "stop toast opens the first result on click, by position" called $'omarchy-notification-send\t.*Click to open the result --exec '"$script"' open abcd1234 0$'
+check "stop toast never names the result" not_called $'omarchy-notification-send\t.*localhost'
+: > "$LOG"; "$script" open abcd1234 0
+check "open looks the result up and hands it to xdg-open" called $'xdg-open\t.*\thttp://localhost:5173/'
+: > "$LOG"; "$script" open abcd1234 1
+check "open reaches a later result by its position" called $'xdg-open\t.*\t'"$HOME/Work/plants/index.html"
+: > "$LOG"; "$script" open "http://localhost:5173/" >/dev/null 2>&1 || true
+check "open no longer takes a URL on its command line" not_called 'xdg-open'
+: > "$LOG"; "$script" open abcd1234 7 >/dev/null 2>&1 || true
+check "open with no such result opens nothing" not_called 'xdg-open'
 
 reset; VOXTYPE_TEXT="make a game" "$script" stop; : > "$HOME/Work/index.html"
 printf '%s' '{"session_id":"abcd1234-0000-4000-8000-000000000000","hook_event_name":"Stop","last_assistant_message":"The game is in `index.html`. Open index.html in a browser; see also missing.html and README.md."}' | "$script" hook stop
@@ -423,7 +433,8 @@ check "needs-input on the focused terminal is quiet" not_called omarchy-notifica
 
 : > "$LOG"
 printf '%s' '{"session_id":"ffff1234-0000-4000-8000-000000000000","hook_event_name":"Stop","last_assistant_message":"Tests fixed."}' | HYPR_ACTIVE=0xother "$script" hook stop
-check "stop on an unfocused terminal toasts the reply with a focus action" called $'omarchy-notification-send\t.*Tests fixed.*--exec '"$script"' attach ffff1234'
+check "stop on an unfocused terminal toasts with a focus action" called $'omarchy-notification-send\t.*Claude is done.*--exec '"$script"' attach ffff1234'
+check "stop on an unfocused terminal never toasts the reply" not_called $'omarchy-notification-send\t.*Tests fixed'
 : > "$LOG"
 printf '%s' '{"session_id":"ffff1234-0000-4000-8000-000000000000","hook_event_name":"Stop","last_assistant_message":"Tests fixed."}' | HYPR_ACTIVE=0xabc "$script" hook stop
 check "stop on the focused terminal is quiet" not_called omarchy-notification-send
@@ -855,6 +866,54 @@ check "uninstall points at the widget entry it will not touch" bash -c "grep -q 
 check "uninstall does not edit the widget entry itself" bash -c "grep -q 'io.github.nimbleaininja.voxclaude' '$HOME/.config/omarchy/shell.json'"
 rm -f "$HOME/.config/omarchy/shell.json"
 check "uninstall never mentions Claude settings" bash -c "! '$script' uninstall 2>&1 | grep -q 'settings.json'"
+
+# ---- no prompt, reply or result in any command line -------------------------------
+# Every executable on PATH is replaced by a shim that logs its argv and then
+# runs the real one, so whatever the script spawns, directly or through a
+# child, is on record. A voice session and a terminal session then go through
+# a whole life with canary values in the prompt, the reply and a result URL,
+# and none of them may appear in any logged command line. Only a click on a
+# result hands its value to xdg-open, which is the one place it has to go.
+audit="$tmp/audit"; mkdir -p "$audit"
+export AUDIT_LOG="$tmp/audit.log"
+cat > "$tmp/audit-shim" <<'SH'
+#!/usr/bin/bash
+printf '%s\t%s\n' "${0##*/}" "$*" >> "$AUDIT_LOG"
+exec "/usr/bin/${0##*/}" "$@"
+SH
+chmod +x "$tmp/audit-shim"
+for f in /usr/bin/*; do
+  n=${f##*/}
+  [[ -f $f && -x $f && ! -e $tmp/bin/$n ]] && ln -s "$tmp/audit-shim" "$audit/$n"
+done
+audited() { PATH="$tmp/bin:$audit:$PATH" "$@"; }
+
+tag="$RANDOM$RANDOM$$"
+p_canary="prompt-canary-$tag" r_canary="reply-canary-$tag" u_canary="url-canary-$tag"
+printf '%s\n' "$p_canary" "$r_canary" "$u_canary" > "$tmp/canaries"
+: > "$AUDIT_LOG"; reset
+voice='"session_id":"abcd1234-0000-4000-8000-000000000000"'
+term='"session_id":"ffff1234-0000-4000-8000-000000000000"'
+VOXTYPE_TEXT="please look after $p_canary" audited "$script" stop
+printf '{%s,"hook_event_name":"UserPromptSubmit","prompt":"and %s"}' "$voice" "$p_canary" | audited "$script" hook prompt || true
+printf '{%s,"hook_event_name":"Notification","notification_type":"permission_prompt"}' "$voice" | audited "$script" hook needs-input
+printf '{%s,"hook_event_name":"Stop","last_assistant_message":"Done with %s. See https://example.com/%s"}' "$voice" "$r_canary" "$u_canary" \
+  | audited "$script" hook stop
+export HYPR_WINDOW_PID=$$
+printf '{%s,"hook_event_name":"SessionStart","source":"startup","cwd":"%s"}' "$term" "$HOME/Proj" | audited "$script" hook start || true
+printf '{%s,"hook_event_name":"UserPromptSubmit","prompt":"%s"}' "$term" "$p_canary" | audited "$script" hook prompt || true
+printf '{%s,"hook_event_name":"Notification","notification_type":"permission_prompt"}' "$term" | HYPR_ACTIVE=0xother audited "$script" hook needs-input
+printf '{%s,"hook_event_name":"Stop","last_assistant_message":"%s at https://example.com/%s"}' "$term" "$r_canary" "$u_canary" \
+  | HYPR_ACTIVE=0xother audited "$script" hook stop
+unset HYPR_WINDOW_PID
+sleep 0.5
+check "the argv audit saw the script's own commands" grep -q $'^jq\t' "$AUDIT_LOG"
+check "the audited run toasted every step" test "$(grep -c $'^omarchy-notification-send\t' "$LOG")" -ge 5
+check "the canaries reached the session records" bash -c "grep -qF '$r_canary' '$RT/sessions/abcd1234.json' && grep -qF '$p_canary' '$RT/sessions/ffff1234.json'"
+check "no prompt, reply or result appears in any spawned command line" bash -c "! grep -qFf '$tmp/canaries' '$AUDIT_LOG' '$LOG'"
+: > "$LOG"; audited "$script" open abcd1234 0
+check "a click on the result is what hands the URL to xdg-open" called $'xdg-open\t.*https://example.com/'"$u_canary"
+rm -f "$tmp/canaries"; rm -rf "$audit"; unset AUDIT_LOG
 
 # ---- runtime directory ------------------------------------------------------
 # State is private to the user: a 0700 directory, never a symlink or someone
