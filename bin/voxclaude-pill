@@ -16,11 +16,17 @@
 # (pw-record died) or after MAX_SECONDS, so no pill outlives its press. Without
 # superwhisper-indicator it exits at once and the capture carries on unshown.
 #
+# The indicator centres itself on Hyprland's active window. With the widget's
+# pillPosition set to "screen" it is started with no Hyprland to ask, and then
+# sits at the bottom centre of the screen whatever has focus.
+#
 # /usr/bin/python3, not env: the shebang interpreter keeps /proc/<pid>/comm
 # "voxclaude-pill", which voxclaude checks before signalling a stored pid, and
 # a python3 earlier on PATH (mise) is not needed for the standard library.
 import json, math, os, signal, struct, subprocess, sys, time
 
+PLUGIN_ID = "io.github.nimbleaininja.voxclaude"
+PLUGIN_DIR = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 INDICATOR = os.environ.get("VOXCLAUDE_PILL_BIN", "/opt/superwhisper/bin/superwhisper-indicator")
 LAYER_SHELL = "/usr/lib/libgtk4-layer-shell.so.0"
 TICK = 0.08            # seconds between frames
@@ -43,6 +49,24 @@ def on_term(*_):
     done = True
 
 
+def pill_position():
+    """The widget's pillPosition: its shell.json entry, else the manifest default."""
+    def load(path):
+        try:
+            with open(path, encoding="utf-8") as f:
+                return json.load(f)
+        except (OSError, ValueError):
+            return {}
+    shell = load(os.path.expanduser("~/.config/omarchy/shell.json"))
+    layout = shell.get("bar", {}).get("layout", {}) if isinstance(shell, dict) else {}
+    for section in (layout.values() if isinstance(layout, dict) else []):
+        for entry in section if isinstance(section, list) else []:
+            if isinstance(entry, dict) and entry.get("id") == PLUGIN_ID and entry.get("pillPosition"):
+                return entry["pillPosition"]
+    manifest = load(os.path.join(PLUGIN_DIR, "manifest.json"))
+    return manifest.get("barWidget", {}).get("defaults", {}).get("pillPosition", "window")
+
+
 def bar(samples):
     """One bar height (4-20) from s16 samples: loudness on a 60 dB scale."""
     if not samples:
@@ -63,6 +87,9 @@ def main():
     # The pill is a layer-shell surface; superwhisper.service starts it the same way.
     if os.path.exists(LAYER_SHELL):
         env.update(LD_PRELOAD=LAYER_SHELL, SW_LAYER_SHELL_PRELOADED="1")
+    # No Hyprland socket under this name, so no active window to centre on.
+    if pill_position() == "screen":
+        env["HYPRLAND_INSTANCE_SIGNATURE"] = "voxclaude-pill-screen"
     try:
         pill = subprocess.Popen([INDICATOR], stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
                                 stderr=subprocess.DEVNULL, env=env, start_new_session=True)

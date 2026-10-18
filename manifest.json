@@ -34,7 +34,8 @@
       "permissionMode": "auto",
       "terminalWords": "terminal",
       "waitSeconds": 60,
-      "transcriber": "voxtype"
+      "transcriber": "voxtype",
+      "pillPosition": "window"
     },
     "schema": [
       {
@@ -75,6 +76,14 @@
         "options": ["voxtype", "superwhisper"],
         "defaultValue": "voxtype",
         "description": "Who turns speech into the prompt. voxtype needs its daemon running; superwhisper records with pw-record and hands the file to the Superwhisper daemon, which never types it anywhere."
+      },
+      {
+        "key": "pillPosition",
+        "type": "enum",
+        "label": "Recording pill position",
+        "options": ["window", "screen"],
+        "defaultValue": "window",
+        "description": "Where Superwhisper's recording pill shows while Super+D records (superwhisper transcriber only): centred on the focused window, as Superwhisper does, or at the bottom centre of the screen."
       }
     ]
   }

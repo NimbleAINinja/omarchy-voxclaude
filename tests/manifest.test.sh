@@ -14,7 +14,9 @@ jq -e '
   and .barWidget.defaults.terminalWords == "terminal"
   and .barWidget.defaults.waitSeconds == 60
   and .barWidget.defaults.transcriber == "voxtype"
-  and ([.barWidget.schema[].key] == ["cwd", "permissionMode", "terminalWords", "waitSeconds", "transcriber"])
+  and .barWidget.defaults.pillPosition == "window"
+  and ([.barWidget.schema[].key] == ["cwd", "permissionMode", "terminalWords", "waitSeconds", "transcriber", "pillPosition"])
+  and ((.barWidget.schema[] | select(.key == "pillPosition") | .options) == ["window", "screen"])
   and ((.barWidget.schema[] | select(.key == "permissionMode") | .options) == ["auto", "acceptEdits", "bypassPermissions", "default"])
   and ((.barWidget.schema[] | select(.key == "transcriber") | .options) == ["voxtype", "superwhisper"])
 ' "$dir/manifest.json" >/dev/null

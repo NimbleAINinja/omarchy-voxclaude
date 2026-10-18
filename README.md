@@ -168,6 +168,7 @@ Set on the widget's entry in `shell.json`, or from the bar settings UI:
 | `terminalWords` | `terminal` | Comma-separated words that also open a terminal window on the session |
 | `waitSeconds` | `60` | How long to wait for the transcript |
 | `transcriber` | `voxtype` | `voxtype` or `superwhisper`: who turns speech into the prompt |
+| `pillPosition` | `window` | Superwhisper's recording pill: centred on the focused `window`, or at the bottom centre of the `screen` |
 
 ## How it works
 
@@ -211,7 +212,10 @@ JSON lines it is fed on stdin; `bin/voxclaude-pill` runs a private one per
 press, so the Superwhisper daemon is never told about it. It closes when the
 transcript arrives, when the recording stops growing for three seconds, or
 after ten minutes, and without the indicator installed it simply does not
-appear.
+appear. The indicator centres itself on Hyprland's active window; with
+`pillPosition` set to `screen` it is started with a Hyprland instance
+signature that names no socket, finds no window, and sits at the bottom
+centre of the screen instead.
 
 Superwhisper's own `start`/`stop` always types the result into the focused
 window, so VoxClaude never uses them: it records the file itself and calls

@@ -871,10 +871,12 @@ case "$1" in
 esac'
 cat > "$tmp/bin/superwhisper-indicator" <<'SH'
 #!/usr/bin/env bash
+# Which Hyprland it would ask for the active window: that is its placement.
+printf '%s\n' "${HYPRLAND_INSTANCE_SIGNATURE-unset}" > "$PILL_LOG.hypr"
 while IFS= read -r line; do printf '%s\n' "$line" >> "$PILL_LOG"; done
 SH
 chmod +x "$tmp/bin/superwhisper-indicator"
-sw_reset() { reset; rm -f "$SW_READS" "$PILL_LOG"; unset SW_PENDING SW_TEXT SW_WARNING SW_TRANSCRIBE_EXIT PW_FAIL; }
+sw_reset() { reset; rm -f "$SW_READS" "$PILL_LOG" "$PILL_LOG.hypr"; unset SW_PENDING SW_TEXT SW_WARNING SW_TRANSCRIBE_EXIT PW_FAIL; }
 recorder_running() { local pid; read -r pid < "$RT/recorder.pid" 2>/dev/null && kill -0 "$pid" 2>/dev/null; }
 pill_shows() { # <jq condition on a frame>: some frame sent so far matches
   local i; for i in $(seq 1 15); do
@@ -886,7 +888,9 @@ cat > "$HOME/.config/omarchy/shell.json" <<JSON
 {"bar":{"layout":{"right":[{"id":"io.github.nimbleaininja.voxclaude","transcriber":"superwhisper"}]}}}
 JSON
 
-sw_reset; "$script" start
+pill_hypr() { local i; for i in $(seq 1 15); do [[ -s $PILL_LOG.hypr ]] && { cat "$PILL_LOG.hypr"; return; }; sleep 0.2; done; }
+
+sw_reset; HYPRLAND_INSTANCE_SIGNATURE=real-hypr "$script" start
 check "superwhisper start records the default source with pw-record" called $'pw-record\t.*\t--rate 16000 --channels 1 --format s16 '"$RT/prompt.wav"
 check "superwhisper start never asks voxtype" not_called $'^voxtype\t'
 check "superwhisper start leaves the recorder running" recorder_running
@@ -894,6 +898,7 @@ check "the marker names the recorder" test "$(cat "$RT/recording" 2>/dev/null)" 
 check "superwhisper start sets status listening" test "$(status)" = listening
 check "superwhisper start shows the recording pill" pill_shows '.visible and .phase == "recording" and .indicatorStyle == "pill" and (.waveform | length) == 6'
 check "the pill's waveform follows the recording" pill_shows '.phase == "recording" and (.waveform | max) > 4'
+check "by default the pill follows the focused window" test "$(pill_hypr)" = real-hypr
 pid=$(cat "$RT/recorder.pid")
 # A few pending reads: transcription takes a moment, as it really does.
 : > "$LOG"; SW_PENDING=5 SW_TEXT="summarise the readme" "$script" stop
@@ -937,6 +942,19 @@ check "no indicator: recording still starts" recorder_running
 check "no indicator: no pill is left running" pill_gone
 : > "$LOG"; VOXCLAUDE_PILL_BIN=/nonexistent SW_TEXT="unshown" "$script" stop
 check "no indicator: the transcript still reaches claude" called $'^claude\t.*-- unshown'
+
+# pillPosition "screen": the pill gets no Hyprland to find a window in, so it
+# keeps to the bottom centre of the screen.
+cat > "$HOME/.config/omarchy/shell.json" <<JSON
+{"bar":{"layout":{"right":[{"id":"io.github.nimbleaininja.voxclaude","transcriber":"superwhisper","pillPosition":"screen"}]}}}
+JSON
+sw_reset; HYPRLAND_INSTANCE_SIGNATURE=real-hypr "$script" start
+check "pillPosition screen keeps the pill off the focused window" test "$(pill_hypr)" = voxclaude-pill-screen
+check "pillPosition screen still shows the pill" pill_shows '.visible and .phase == "recording"'
+SW_TEXT="x" "$script" stop >/dev/null
+cat > "$HOME/.config/omarchy/shell.json" <<JSON
+{"bar":{"layout":{"right":[{"id":"io.github.nimbleaininja.voxclaude","transcriber":"superwhisper"}]}}}
+JSON
 
 sw_reset; PW_FAIL=1 "$script" start || true
 check "a recorder that cannot start -> error" test "$(status)" = error
