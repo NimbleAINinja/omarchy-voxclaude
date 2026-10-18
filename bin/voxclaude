@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # voxclaude — hold-to-talk Claude Code for the Omarchy shell.
 #
-#   voxclaude start              press: start recording (voxtype writes to a file)
+#   voxclaude start              press: start recording (voxtype, or pw-record for Superwhisper)
 #   voxclaude stop               release: wait for the transcript, then dispatch
 #   voxclaude dispatch <text>    run text through Claude (background or terminal)
 #   voxclaude hook needs-input   Claude Code Notification hook (stdin JSON)
@@ -23,6 +23,7 @@
 #
 # State lives in $XDG_RUNTIME_DIR/voxclaude (mode 0700): status (one word), recording
 # (marker while the key is held), prompt.txt (voxtype's transcript),
+# prompt.wav and recorder.pid (the Superwhisper capture while it runs),
 # hooks.json (session-scoped Claude hooks), sessions/<shortId>.json and
 # sessions.json (the aggregated feed the bar widget watches).
 set -uo pipefail
@@ -62,6 +63,9 @@ fi
 private_dir "$RT" || exit 1
 SESSIONS=$RT/sessions
 PROMPT_FILE=$RT/prompt.txt
+AUDIO_FILE=$RT/prompt.wav
+RECORDER_PID=$RT/recorder.pid
+ENGINE_FILE=$RT/transcriber
 MARKER=$RT/recording
 STATUS_FILE=$RT/status
 HOOKS_FILE=$RT/hooks.json
@@ -83,20 +87,37 @@ load_settings() {
     | ($docs | map(select(type == "object" and has("barWidget"))) | first // {}) as $manifest
     | ([$shell.bar.layout[]?[]? | select(type == "object" and .id == $id)] | first // {}) as $entry
     | ($manifest.barWidget.defaults // {}) as $defaults
-    | ["cwd", "permissionMode", "terminalWords", "waitSeconds"]
+    | ["cwd", "permissionMode", "terminalWords", "waitSeconds", "transcriber"]
     | map(. as $k | ($entry[$k] // $defaults[$k] // "") | tostring) | join("\u001f")' "${files[@]}" 2>/dev/null)
   # Unit separator, not tab: tab is IFS whitespace, so `read` folds a run of
   # them into one and a single cleared field shifted every later setting along
   # (clearing the trigger words emptied the timeout and broke every dictation).
-  IFS=$'\037' read -r S_CWD S_MODE S_WORDS S_WAIT <<< "$line"
+  IFS=$'\037' read -r S_CWD S_MODE S_WORDS S_WAIT S_ENGINE <<< "$line"
   # A field cleared in the settings UI arrives as "", which is not what the
   # manifest default is for. Empty terminalWords is honoured - wants_terminal
-  # then never fires - but the other three have no sane empty. The literals
+  # then never fires - but the others have no sane empty. The literals
   # mirror manifest.json, and stand in when it cannot be read at all.
   [[ -n $S_CWD ]] || S_CWD=$HOME
   [[ $S_MODE =~ ^(auto|acceptEdits|bypassPermissions|default)$ ]] || S_MODE=auto
   [[ $S_WAIT =~ ^[1-9][0-9]*$ ]] || S_WAIT=60
+  [[ $S_ENGINE =~ ^(voxtype|superwhisper)$ ]] || S_ENGINE=voxtype
+  # Remembered for the next press, which must open the mic before any jq.
+  printf '%s\n' "$S_ENGINE" > "$ENGINE_FILE" 2>/dev/null
   S_LOADED=1
+}
+
+# The transcriber for a press, without a jq in front of the microphone: the one
+# load_settings last saw, unless a settings file has changed since then.
+press_engine() {
+  local f
+  P_ENGINE=""
+  [[ -f $ENGINE_FILE ]] && read -r P_ENGINE < "$ENGINE_FILE" 2>/dev/null
+  for f in "$HOME/.config/omarchy/shell.json" "$plugin_dir/manifest.json"; do
+    [[ $f -nt $ENGINE_FILE ]] && P_ENGINE=""
+  done
+  [[ $P_ENGINE =~ ^(voxtype|superwhisper)$ ]] && return 0
+  load_settings
+  P_ENGINE=$S_ENGINE
 }
 
 atomic_write() { # <path> <content>
@@ -431,14 +452,33 @@ TOP_FILTER='map(select((.hidden != true or .status == "needs-input")
   | sort_by([(if .status == "needs-input" then 0 else 1 end), (if .pinned then 0 else 1 end), -(.startedAt // 0)])'
 latest_session() { list_json | jq -r "$TOP_FILTER | .[0].shortId // empty"; }
 
-# A recording marker voxtype no longer honours (the release bind never fired
-# and the daemon went idle on its own) must not turn the next press into a stop.
+# The pw-record behind a Superwhisper capture, if it is still running. The pid
+# is checked against /proc so a recycled pid is never mistaken for it, or sent
+# the signal that ends the capture.
+recorder_pid() {
+  local pid="" comm=""
+  [[ -f $RECORDER_PID ]] && read -r pid < "$RECORDER_PID" 2>/dev/null
+  [[ $pid =~ ^[1-9][0-9]*$ ]] || return 1
+  { read -r comm < "/proc/$pid/comm"; } 2>/dev/null
+  [[ $comm == pw-record ]] || return 1
+  printf '%s\n' "$pid"
+}
+
+# A recording marker the recorder no longer honours (the release bind never
+# fired, and voxtype went idle on its own or pw-record died) must not turn the
+# next press into a stop.
 clear_stale_marker() {
-  # voxtype's state file is only trusted inside the user's own runtime dir.
-  local vox_state="${XDG_RUNTIME_DIR:-}/voxtype/state" state=""
-  [[ -n $RUNTIME_OK && -f $MARKER && -f $vox_state ]] || return 0
-  read -r state < "$vox_state" 2>/dev/null
-  [[ $state == idle ]] || return 0
+  [[ -f $MARKER ]] || return 0
+  if [[ -f $RECORDER_PID ]]; then
+    recorder_pid >/dev/null && return 0
+    rm -f "$RECORDER_PID" "$AUDIO_FILE"
+  else
+    # voxtype's state file is only trusted inside the user's own runtime dir.
+    local vox_state="${XDG_RUNTIME_DIR:-}/voxtype/state" state=""
+    [[ -n $RUNTIME_OK && -f $vox_state ]] || return 0
+    read -r state < "$vox_state" 2>/dev/null
+    [[ $state == idle ]] || return 0
+  fi
   rm -f "$MARKER"
   # The marker is gone but "listening" is still on the bar, and apply_status
   # will not overwrite a capture word, so without this every later hook's
@@ -622,29 +662,100 @@ open_attached() { # <shortId>
 
 # ---------------------------------------------------------------- commands
 
+# Superwhisper's own capture always types its result into the focused window,
+# so it records nothing here: pw-record captures the default source (the one
+# Superwhisper uses too) and the file is handed over on release.
+superwhisper_start() {
+  local pid
+  rm -f "$AUDIO_FILE" "$RECORDER_PID"
+  setsid pw-record --rate 16000 --channels 1 --format s16 "$AUDIO_FILE" >/dev/null 2>"$RT/stderr" </dev/null &
+  pid=$!
+  printf '%s\n' "$pid" > "$RECORDER_PID"
+  # pw-record dies at once when there is no PipeWire or no source to open.
+  sleep 0.1
+  recorder_pid >/dev/null && return 0
+  rm -f "$RECORDER_PID" "$AUDIO_FILE"
+  [[ -s $RT/stderr ]] || echo "pw-record could not open the microphone" > "$RT/stderr"
+  return 1
+}
+
+# Prints the transcript. Exit 0 with text, 3 when nothing was heard (as voxtype
+# does) and anything else on failure, with the reason on stderr.
+superwhisper_stop() {
+  local pid i reply sid out kind text
+  if pid=$(recorder_pid); then
+    # SIGINT, not SIGTERM: pw-record writes the WAV header on the way out.
+    kill -INT "$pid" 2>/dev/null
+    for ((i = 0; i < 40; i++)); do kill -0 "$pid" 2>/dev/null || break; sleep 0.05; done
+  fi
+  rm -f "$RECORDER_PID"
+  [[ -s $AUDIO_FILE ]] || { echo "No audio was recorded" >&2; return 1; }
+  # Without --insert the transcript is only reported, never typed anywhere.
+  reply=$(superwhisper transcribe "$AUDIO_FILE") || { rm -f "$AUDIO_FILE"; return 1; }
+  sid=$(jq -r '.session_id // empty' <<< "$reply" 2>/dev/null)
+  if [[ ! $sid =~ ^[0-9]+$ ]]; then
+    rm -f "$AUDIO_FILE"; echo "superwhisper: ${reply:-no reply}" >&2; return 1
+  fi
+  # transcribe returns as soon as the job is queued; `read` reports the latest
+  # finished one, so wait for it to be ours.
+  for ((i = 0; i < S_WAIT * 10; i++)); do
+    out=$(superwhisper read 2>/dev/null)
+    { IFS= read -r kind; IFS= read -r -d '' text; } < <(jq -r --arg s "$sid" '
+      if (.session_id | tostring) != $s then "pending"
+      elif ((.text // "") | test("\\S")) then "text\n" + .text
+      elif .warning == "No speech detected" then "silent"
+      else "failed\n" + (.error // .warning // "no transcript") end' <<< "$out" 2>/dev/null)
+    [[ ${kind:-pending} == pending ]] || break
+    sleep 0.1
+  done
+  rm -f "$AUDIO_FILE"
+  case ${kind:-pending} in
+    text) printf '%s\n' "${text%$'\n'}" ;;
+    silent) return 3 ;;
+    pending) echo "Superwhisper gave no transcript within ${S_WAIT}s" >&2; return 1 ;;
+    *) printf '%s\n' "${text%$'\n'}" >&2; return 1 ;;
+  esac
+}
+
 # The microphone opens first: you are already talking, and every record
 # examined before that is a word lost. Housekeeping follows.
 cmd_start() {
   clear_stale_marker
   if [[ -f $MARKER ]]; then cmd_stop; return; fi
   rm -f "$PROMPT_FILE"
-  if voxtype record start --file="$PROMPT_FILE" >/dev/null 2>"$RT/stderr"; then
-    touch "$MARKER"
+  press_engine
+  local ok=0
+  if [[ $P_ENGINE == superwhisper ]]; then
+    superwhisper_start && ok=1
+  else
+    voxtype record start --file="$PROMPT_FILE" >/dev/null 2>"$RT/stderr" && ok=1
+  fi
+  if (( ok )); then
+    # The marker names the recorder, so the release goes to the one that started.
+    printf '%s\n' "$P_ENGINE" > "$MARKER"
     set_status listening
     prune
   else
     set_status error
-    notify -u critical -t 5000 "voxtype is not recording" "$(head -1 "$RT/stderr" 2>/dev/null)"
+    notify -u critical -t 5000 "$P_ENGINE is not recording" "$(head -1 "$RT/stderr" 2>/dev/null)"
     return 1
   fi
 }
 
 cmd_stop() {
+  local text rc engine=""
+  [[ -f $MARKER ]] && read -r engine < "$MARKER" 2>/dev/null
   rm -f "$MARKER"
   set_status transcribing
-  local text rc
   load_settings
-  text=$(voxtype record stop --wait --timeout "$S_WAIT" 2>"$RT/stderr")
+  # A capture under way finishes on the recorder that started it, even if the
+  # setting changed while the key was held.
+  [[ $engine =~ ^(voxtype|superwhisper)$ ]] || engine=$S_ENGINE
+  if [[ $engine == superwhisper ]]; then
+    text=$(superwhisper_stop 2>"$RT/stderr")
+  else
+    text=$(voxtype record stop --wait --timeout "$S_WAIT" 2>"$RT/stderr")
+  fi
   rc=$?
   case $rc in
     0) cmd_dispatch "$text" ;;

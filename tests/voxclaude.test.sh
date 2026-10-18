@@ -837,6 +837,108 @@ check "a plain file at the state path aborts the run" \
   bash -c "! ( unset XDG_RUNTIME_DIR; TMPDIR='$fb' '$script' status ) >/dev/null 2>&1"
 rm -rf "$fb"
 
+# ---- transcriber: superwhisper ----------------------------------------------
+# pw-record is Python, not a make_stub: a background job starts with SIGINT
+# ignored and bash cannot trap a signal ignored on entry, but the real
+# pw-record (and Python) install a handler anyway. The direct shebang keeps
+# /proc/<pid>/comm "pw-record", which is what voxclaude checks before signalling.
+cat > "$tmp/bin/pw-record" <<'PY'
+#!/usr/bin/python3
+import os, signal, sys, time
+with open(os.environ["LOG"], "a") as log:
+    log.write("pw-record\t%s\t%s\n" % (os.getcwd(), " ".join(sys.argv[1:])))
+if os.environ.get("PW_FAIL"):
+    sys.stderr.write("pw-record: no source to open\n"); sys.exit(1)
+open(sys.argv[-1], "wb").write(b"RIFF fake audio")
+signal.signal(signal.SIGINT, lambda *_: sys.exit(0))
+time.sleep(30)
+PY
+chmod +x "$tmp/bin/pw-record"
+export SW_READS="$tmp/sw.reads"
+make_stub superwhisper '
+case "$1" in
+  transcribe) [[ ${SW_TRANSCRIBE_EXIT:-0} == 0 ]] || { echo "Error: daemon not running" >&2; exit 1; }
+    [[ -s $2 ]] && cp "$2" "$2.seen"; echo "{\"ok\":true,\"session_id\":7}" ;;
+  read) n=$(( $(cat "$SW_READS" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$SW_READS"
+    if (( n <= ${SW_PENDING:-0} )); then echo "{\"session_id\":6,\"text\":\"an older dictation\"}"
+    else jq -cn --arg t "${SW_TEXT-}" --arg w "${SW_WARNING-}" "{session_id: 7, text: \$t, warning: (if \$w == \"\" then null else \$w end)}"; fi ;;
+esac'
+sw_reset() { reset; rm -f "$SW_READS"; unset SW_PENDING SW_TEXT SW_WARNING SW_TRANSCRIBE_EXIT PW_FAIL; }
+recorder_running() { local pid; read -r pid < "$RT/recorder.pid" 2>/dev/null && kill -0 "$pid" 2>/dev/null; }
+cat > "$HOME/.config/omarchy/shell.json" <<JSON
+{"bar":{"layout":{"right":[{"id":"io.github.nimbleaininja.voxclaude","transcriber":"superwhisper"}]}}}
+JSON
+
+sw_reset; "$script" start
+check "superwhisper start records the default source with pw-record" called $'pw-record\t.*\t--rate 16000 --channels 1 --format s16 '"$RT/prompt.wav"
+check "superwhisper start never asks voxtype" not_called $'^voxtype\t'
+check "superwhisper start leaves the recorder running" recorder_running
+check "the marker names the recorder" test "$(cat "$RT/recording" 2>/dev/null)" = superwhisper
+check "superwhisper start sets status listening" test "$(status)" = listening
+pid=$(cat "$RT/recorder.pid")
+: > "$LOG"; SW_TEXT="summarise the readme" "$script" stop
+check "superwhisper stop ends the recorder" bash -c "! kill -0 $pid 2>/dev/null"
+check "superwhisper stop hands the recording to superwhisper" test -s "$RT/prompt.wav.seen"
+check "superwhisper is never asked to type the transcript" not_called $'^superwhisper\t.*insert'
+check "superwhisper transcript reaches claude" called $'^claude\t.*--bg .*-- summarise the readme'
+check "superwhisper stop deletes the recording" test ! -e "$RT/prompt.wav"
+check "superwhisper stop leaves no recorder pid" test ! -e "$RT/recorder.pid"
+rm -f "$RT/prompt.wav.seen"
+
+sw_reset; "$script" start; : > "$LOG"
+SW_PENDING=3 SW_TEXT="the newer one" "$script" stop
+check "an older finished dictation is not taken for this one" not_called 'an older dictation'
+check "the transcript is waited for until its session reports" called $'^claude\t.*-- the newer one'
+
+sw_reset; "$script" start; : > "$LOG"
+SW_WARNING="No speech detected" "$script" stop
+check "superwhisper silence -> nothing heard" called $'omarchy-notification-send\t.*Nothing heard'
+check "superwhisper silence launches nothing" not_called $'^claude\t'
+check "superwhisper silence -> idle" test "$(status)" = idle
+
+sw_reset; "$script" start; : > "$LOG"
+SW_TRANSCRIBE_EXIT=1 "$script" stop || true
+check "superwhisper failure -> error" test "$(status)" = error
+check "superwhisper failure notifies with its stderr" called $'omarchy-notification-send\t.*daemon not running'
+check "a failed transcription still deletes the recording" test ! -e "$RT/prompt.wav"
+
+sw_reset; PW_FAIL=1 "$script" start || true
+check "a recorder that cannot start -> error" test "$(status)" = error
+check "a recorder that cannot start notifies" called $'omarchy-notification-send\t.*superwhisper is not recording.*no source'
+check "a recorder that cannot start leaves no marker" test ! -f "$RT/recording"
+
+# The recorder died while the key was held: the next press records afresh
+# instead of being read as the release.
+sw_reset; "$script" start; kill "$(cat "$RT/recorder.pid")"; sleep 0.2; : > "$LOG"
+"$script" start
+check "a dead recorder's marker does not turn a press into a stop" not_called $'^superwhisper\t'
+check "a dead recorder's marker gives way to a new recording" recorder_running
+SW_TEXT="x" "$script" stop >/dev/null
+
+# Changing the setting mid-press must not strand the recorder that is running.
+sw_reset; "$script" start
+cat > "$HOME/.config/omarchy/shell.json" <<JSON
+{"bar":{"layout":{"right":[{"id":"io.github.nimbleaininja.voxclaude","transcriber":"voxtype"}]}}}
+JSON
+: > "$LOG"; SW_TEXT="finish on superwhisper" "$script" stop
+check "a capture finishes on the recorder that started it" called $'^claude\t.*-- finish on superwhisper'
+check "a capture started on superwhisper never stops voxtype" not_called $'^voxtype\t'
+
+cat > "$HOME/.config/omarchy/shell.json" <<JSON
+{"bar":{"layout":{"right":[{"id":"io.github.nimbleaininja.voxclaude","transcriber":"superwhisper","waitSeconds":1}]}}}
+JSON
+sw_reset; "$script" start; : > "$LOG"
+SW_PENDING=1000 "$script" stop || true
+check "superwhisper that never reports times out on waitSeconds" called $'omarchy-notification-send\t.*no transcript within 1s'
+
+cat > "$HOME/.config/omarchy/shell.json" <<JSON
+{"bar":{"layout":{"right":[{"id":"io.github.nimbleaininja.voxclaude","transcriber":"whisper.cpp"}]}}}
+JSON
+sw_reset; "$script" start
+check "an unknown transcriber falls back to voxtype" called $'^voxtype\t.*\trecord start'
+VOXTYPE_STOP_EXIT=3 "$script" stop
+rm -f "$HOME/.config/omarchy/shell.json"
+
 # ---- status -----------------------------------------------------------------
 check "status prints idle when nothing is recorded" bash -c "rm -rf '$RT'; [[ \$('$script' status) == idle ]]"
 

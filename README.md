@@ -7,7 +7,7 @@ stays one click away in the Omarchy bar.
 <p align="center"><img src="preview.png" width="340" alt="The VoxClaude popover: two sessions working, one done with links to its results"></p>
 
 Built for the [Omarchy](https://omarchy.org) shell on top of
-[voxtype](https://github.com/peteonrails/voxtype) and the
+[voxtype](https://github.com/peteonrails/voxtype) (or Superwhisper) and the
 [Claude Code](https://code.claude.com) CLI.
 
 ## Why
@@ -42,7 +42,7 @@ list of every Claude session on the machine.
 ## A session, start to finish
 
 1. Hold Super+D. The bar critter blinks: it is listening.
-2. Say what you want and release the key. voxtype transcribes it, Claude Code
+2. Say what you want and release the key. voxtype (or Superwhisper) transcribes it, Claude Code
    starts in the background in your working directory, and a toast says
    "Working on it".
 3. The critter swings its arms while Claude works. Hover it for the prompt and
@@ -83,7 +83,10 @@ status line marks sessions started from a terminal apart from voice ones.
 
 - Omarchy 4 shell with voxtype installed and its daemon running
   (`voxtype status` prints `idle` when it is). voxtype ≥ 1.0 is needed for
-  `record start --file` and `record stop --wait`.
+  `record start --file` and `record stop --wait`. Or, with `transcriber` set
+  to `superwhisper`, the Superwhisper daemon running instead
+  (`superwhisper status` answers) and `pw-record` (PipeWire), which records the
+  default source.
 - Claude Code CLI ≥ 2.1.260 (`claude --bg`, `claude attach`, session-scoped hooks).
 - `jq`, `flock` and `setsid` (util-linux), `pgrep` (procps), `hyprctl`,
   `xdg-open`, and Omarchy's own `omarchy-notification-send` and
@@ -161,7 +164,8 @@ Set on the widget's entry in `shell.json`, or from the bar settings UI:
 | `cwd` | `~/Work` | Directory voice-launched Claude sessions start in |
 | `permissionMode` | `auto` | `claude --permission-mode`; anything that would prompt opens a terminal instead |
 | `terminalWords` | `terminal` | Comma-separated words that also open a terminal window on the session |
-| `waitSeconds` | `60` | How long to wait for voxtype's transcript |
+| `waitSeconds` | `60` | How long to wait for the transcript |
+| `transcriber` | `voxtype` | `voxtype` or `superwhisper`: who turns speech into the prompt |
 
 ## How it works
 
@@ -169,6 +173,10 @@ Set on the widget's entry in `shell.json`, or from the bar settings UI:
 Super+D down   voxclaude start     voxtype record start --file=$RT/prompt.txt
 Super+D up     voxclaude stop      voxtype record stop --wait  →  transcript
                                    claude --bg --settings $RT/hooks.json -- "<text>"
+  transcriber = superwhisper:
+Super+D down   voxclaude start     pw-record $RT/prompt.wav
+Super+D up     voxclaude stop      SIGINT pw-record; superwhisper transcribe $RT/prompt.wav
+                                   superwhisper read (until its session_id)  →  transcript
                                    └─ said a terminal word → foot window: claude attach <shortId>
 Claude hooks   SessionStart       → voxclaude hook start       → record + window for terminal sessions
                PreToolUse         → voxclaude hook tool        → progress line; done → busy again
@@ -190,8 +198,16 @@ bar widget reads `$XDG_RUNTIME_DIR/voxclaude` only; the fallback is for the
 CLI outside a login session. `$RT` holds `status` (one word the widget
 watches), `sessions/<shortId>.json` (one record per session), `sessions.json`
 (all records, newest first, rewritten on every change and watched by the
-widget), `hooks.json` (the session-scoped Claude hooks) and voxtype's
-`prompt.txt`.
+widget), `hooks.json` (the session-scoped Claude hooks), `transcriber` (the
+last setting read, so a press opens the mic before any jq) and voxtype's
+`prompt.txt` - or, while Superwhisper is recording, `prompt.wav` and
+`recorder.pid`. The recording is deleted once it is transcribed.
+
+Superwhisper's own `start`/`stop` always types the result into the focused
+window, so VoxClaude never uses them: it records the file itself and calls
+`transcribe` without `--insert`, which only reports the text. The recording
+marker names the recorder that started, so changing the setting while the key
+is held still releases the right one.
 
 A `PreToolUse` hook blocks the tool call that fired it, in every session on
 the machine, so the script keeps that path cheap: four `jq` calls per hook
@@ -239,8 +255,9 @@ pulls a laptop out from behind his back and types while Claude works.
   onto it ("The session keeps running either way", says `claude attach --help`).
   A session you started yourself in your own terminal is an ordinary
   interactive one and does end with its window.
-- Nothing heard (voxtype exit 3) → quiet toast, back to idle.
-- voxtype daemon down or Claude not logged in → error glyph plus a toast with
+- Nothing heard (voxtype exit 3, Superwhisper "No speech detected") → quiet
+  toast, back to idle.
+- voxtype or Superwhisper daemon down, or Claude not logged in → error glyph plus a toast with
   the first line of stderr. `voxclaude status` prints the current word.
 - Records older than a day are pruned (with their lock files), both after the
   microphone opens when you hold the key and, at most once an hour, from the
@@ -311,7 +328,7 @@ bin/voxclaude keybind                      # the hold key the widget will name
 
 `Model.js` is pure ES5 shared by QML and node. `bin/voxclaude` is the only
 thing that runs processes; `tests/voxclaude.test.sh` drives it with stub
-`voxtype`, `claude` and `omarchy-*` binaries on `PATH`. The pixel renderer is
+`voxtype`, `superwhisper`, `pw-record`, `claude` and `omarchy-*` binaries on `PATH`. The pixel renderer is
 `PixelSprite.qml`, not `Sprite.qml`: QtQuick has a built-in `Sprite` type that
 shadows a same-named file.
 

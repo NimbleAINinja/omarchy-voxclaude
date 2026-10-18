@@ -13,8 +13,10 @@ jq -e '
   and .barWidget.defaults.permissionMode == "auto"
   and .barWidget.defaults.terminalWords == "terminal"
   and .barWidget.defaults.waitSeconds == 60
-  and ([.barWidget.schema[].key] == ["cwd", "permissionMode", "terminalWords", "waitSeconds"])
+  and .barWidget.defaults.transcriber == "voxtype"
+  and ([.barWidget.schema[].key] == ["cwd", "permissionMode", "terminalWords", "waitSeconds", "transcriber"])
   and ((.barWidget.schema[] | select(.key == "permissionMode") | .options) == ["auto", "acceptEdits", "bypassPermissions", "default"])
+  and ((.barWidget.schema[] | select(.key == "transcriber") | .options) == ["voxtype", "superwhisper"])
 ' "$dir/manifest.json" >/dev/null
 
 [[ -f "$dir/Panel.qml" ]] || { echo "Panel.qml missing" >&2; exit 1; }
