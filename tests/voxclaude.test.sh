@@ -14,6 +14,9 @@ export LOG="$tmp/calls.log"
 export VOXTYPE_STOP_EXIT=0
 export VOXTYPE_START_EXIT=0
 export VOXTYPE_TEXT="hello there"
+# Never the real Superwhisper pill: a stub that logs every frame it is sent.
+export VOXCLAUDE_PILL_BIN="$tmp/bin/superwhisper-indicator"
+export PILL_LOG="$tmp/pill.log"
 mkdir -p "$HOME/.config/omarchy" "$HOME/.claude" "$XDG_RUNTIME_DIR" "$tmp/bin" "$HOME/Work" "$HOME/Proj"
 # The stubs create it on first use; without it an early not_called greps a
 # file that is not there yet and prints an error while returning the right
@@ -849,9 +852,12 @@ with open(os.environ["LOG"], "a") as log:
     log.write("pw-record\t%s\t%s\n" % (os.getcwd(), " ".join(sys.argv[1:])))
 if os.environ.get("PW_FAIL"):
     sys.stderr.write("pw-record: no source to open\n"); sys.exit(1)
-open(sys.argv[-1], "wb").write(b"RIFF fake audio")
 signal.signal(signal.SIGINT, lambda *_: sys.exit(0))
-time.sleep(30)
+# A 44-byte header, then loud audio arriving as it would from a microphone.
+with open(sys.argv[-1], "wb") as f:
+    f.write(b"RIFF" + bytes(40))
+    for _ in range(600):
+        f.write(b"\x00\x40" * 800); f.flush(); time.sleep(0.05)
 PY
 chmod +x "$tmp/bin/pw-record"
 export SW_READS="$tmp/sw.reads"
@@ -863,8 +869,19 @@ case "$1" in
     if (( n <= ${SW_PENDING:-0} )); then echo "{\"session_id\":6,\"text\":\"an older dictation\"}"
     else jq -cn --arg t "${SW_TEXT-}" --arg w "${SW_WARNING-}" "{session_id: 7, text: \$t, warning: (if \$w == \"\" then null else \$w end)}"; fi ;;
 esac'
-sw_reset() { reset; rm -f "$SW_READS"; unset SW_PENDING SW_TEXT SW_WARNING SW_TRANSCRIBE_EXIT PW_FAIL; }
+cat > "$tmp/bin/superwhisper-indicator" <<'SH'
+#!/usr/bin/env bash
+while IFS= read -r line; do printf '%s\n' "$line" >> "$PILL_LOG"; done
+SH
+chmod +x "$tmp/bin/superwhisper-indicator"
+sw_reset() { reset; rm -f "$SW_READS" "$PILL_LOG"; unset SW_PENDING SW_TEXT SW_WARNING SW_TRANSCRIBE_EXIT PW_FAIL; }
 recorder_running() { local pid; read -r pid < "$RT/recorder.pid" 2>/dev/null && kill -0 "$pid" 2>/dev/null; }
+pill_shows() { # <jq condition on a frame>: some frame sent so far matches
+  local i; for i in $(seq 1 15); do
+    [[ -f $PILL_LOG ]] && jq -se "any(.[]; $1)" "$PILL_LOG" >/dev/null 2>&1 && return 0; sleep 0.2
+  done; return 1
+}
+pill_gone() { local i; for i in $(seq 1 15); do pgrep -f "voxclaude-pill $RT/" >/dev/null || return 0; sleep 0.2; done; return 1; }
 cat > "$HOME/.config/omarchy/shell.json" <<JSON
 {"bar":{"layout":{"right":[{"id":"io.github.nimbleaininja.voxclaude","transcriber":"superwhisper"}]}}}
 JSON
@@ -875,8 +892,15 @@ check "superwhisper start never asks voxtype" not_called $'^voxtype\t'
 check "superwhisper start leaves the recorder running" recorder_running
 check "the marker names the recorder" test "$(cat "$RT/recording" 2>/dev/null)" = superwhisper
 check "superwhisper start sets status listening" test "$(status)" = listening
+check "superwhisper start shows the recording pill" pill_shows '.visible and .phase == "recording" and .indicatorStyle == "pill" and (.waveform | length) == 6'
+check "the pill's waveform follows the recording" pill_shows '.phase == "recording" and (.waveform | max) > 4'
 pid=$(cat "$RT/recorder.pid")
-: > "$LOG"; SW_TEXT="summarise the readme" "$script" stop
+# A few pending reads: transcription takes a moment, as it really does.
+: > "$LOG"; SW_PENDING=5 SW_TEXT="summarise the readme" "$script" stop
+check "release turns the pill to Transcribing" pill_shows '.phase == "processing" and .title == "Transcribing"'
+check "a finished transcription hides the pill" pill_shows '.visible == false'
+check "a finished transcription ends the pill" pill_gone
+check "a finished transcription leaves no pill pid" test ! -e "$RT/pill.pid"
 check "superwhisper stop ends the recorder" bash -c "! kill -0 $pid 2>/dev/null"
 check "superwhisper stop hands the recording to superwhisper" test -s "$RT/prompt.wav.seen"
 check "superwhisper is never asked to type the transcript" not_called $'^superwhisper\t.*insert'
@@ -901,6 +925,18 @@ SW_TRANSCRIBE_EXIT=1 "$script" stop || true
 check "superwhisper failure -> error" test "$(status)" = error
 check "superwhisper failure notifies with its stderr" called $'omarchy-notification-send\t.*daemon not running'
 check "a failed transcription still deletes the recording" test ! -e "$RT/prompt.wav"
+check "a failed transcription ends the pill" pill_gone
+
+sw_reset; "$script" start; : > "$LOG"
+SW_WARNING="No speech detected" "$script" stop
+check "silence ends the pill" pill_gone
+
+# Without Superwhisper's indicator the capture works the same, unshown.
+sw_reset; VOXCLAUDE_PILL_BIN=/nonexistent "$script" start
+check "no indicator: recording still starts" recorder_running
+check "no indicator: no pill is left running" pill_gone
+: > "$LOG"; VOXCLAUDE_PILL_BIN=/nonexistent SW_TEXT="unshown" "$script" stop
+check "no indicator: the transcript still reaches claude" called $'^claude\t.*-- unshown'
 
 sw_reset; PW_FAIL=1 "$script" start || true
 check "a recorder that cannot start -> error" test "$(status)" = error
@@ -913,7 +949,9 @@ sw_reset; "$script" start; kill "$(cat "$RT/recorder.pid")"; sleep 0.2; : > "$LO
 "$script" start
 check "a dead recorder's marker does not turn a press into a stop" not_called $'^superwhisper\t'
 check "a dead recorder's marker gives way to a new recording" recorder_running
+check "a dead recorder's pill gives way to one pill, not two" test "$(pgrep -fc "voxclaude-pill $RT/")" = 1
 SW_TEXT="x" "$script" stop >/dev/null
+check "the replacement pill ends with its capture" pill_gone
 
 # Changing the setting mid-press must not strand the recorder that is running.
 sw_reset; "$script" start

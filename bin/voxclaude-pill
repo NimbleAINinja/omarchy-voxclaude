@@ -1,0 +1,120 @@
+#!/usr/bin/python3
+# voxclaude-pill — Superwhisper's recording pill for a Super+D capture.
+#
+#   voxclaude-pill <prompt.wav>
+#
+# Started by `voxclaude start` once pw-record is writing <prompt.wav>. It runs
+# superwhisper-indicator, the pill Superwhisper shows for its own dictation,
+# and drives it over stdin the way the daemon does (one JSON object per line),
+# so the daemon is never involved. The waveform is the newest audio in the
+# file, read as pw-record writes it.
+#
+#   SIGUSR1   the key is up: show "Transcribing"
+#   SIGTERM   done: hide the pill and exit
+#
+# It also exits on its own when the recording stops growing while it should be
+# (pw-record died) or after MAX_SECONDS, so no pill outlives its press. Without
+# superwhisper-indicator it exits at once and the capture carries on unshown.
+#
+# /usr/bin/python3, not env: the shebang interpreter keeps /proc/<pid>/comm
+# "voxclaude-pill", which voxclaude checks before signalling a stored pid, and
+# a python3 earlier on PATH (mise) is not needed for the standard library.
+import json, math, os, signal, struct, subprocess, sys, time
+
+INDICATOR = os.environ.get("VOXCLAUDE_PILL_BIN", "/opt/superwhisper/bin/superwhisper-indicator")
+LAYER_SHELL = "/usr/lib/libgtk4-layer-shell.so.0"
+TICK = 0.08            # seconds between frames
+BARS = 6               # the daemon's waveform is six bars
+STALL_SECONDS = 3.0    # recording that stops growing this long has died
+MAX_SECONDS = 600.0
+WAV_HEADER = 44
+
+phase = "recording"
+done = False
+
+
+def on_usr1(*_):
+    global phase
+    phase = "processing"
+
+
+def on_term(*_):
+    global done
+    done = True
+
+
+def bar(samples):
+    """One bar height (4-20) from s16 samples: loudness on a 60 dB scale."""
+    if not samples:
+        return 4
+    rms = math.sqrt(sum(s * s for s in samples) / len(samples)) or 1.0
+    level = min(max((20 * math.log10(rms / 32768) + 60) / 60, 0.0), 1.0)
+    return int(round(4 + 16 * level))
+
+
+def main():
+    if len(sys.argv) != 2 or not os.access(INDICATOR, os.X_OK):
+        return 0
+    wav = sys.argv[1]
+    signal.signal(signal.SIGUSR1, on_usr1)
+    signal.signal(signal.SIGTERM, on_term)
+    signal.signal(signal.SIGINT, on_term)
+    env = dict(os.environ)
+    # The pill is a layer-shell surface; superwhisper.service starts it the same way.
+    if os.path.exists(LAYER_SHELL):
+        env.update(LD_PRELOAD=LAYER_SHELL, SW_LAYER_SHELL_PRELOADED="1")
+    try:
+        pill = subprocess.Popen([INDICATOR], stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL, env=env, start_new_session=True)
+    except OSError:
+        return 0
+
+    def send(**state):
+        try:
+            pill.stdin.write((json.dumps(state) + "\n").encode())
+            pill.stdin.flush()
+            return True
+        except (BrokenPipeError, OSError):
+            return False
+
+    bars = [4] * BARS
+    offset, grown = WAV_HEADER, time.monotonic()
+    started = time.monotonic()
+    while not done and pill.poll() is None and time.monotonic() - started < MAX_SECONDS:
+        if phase == "recording":
+            try:
+                size = os.path.getsize(wav)
+            except OSError:
+                size = 0
+            if size > offset:
+                grown = time.monotonic()
+                with open(wav, "rb") as f:
+                    # Only the newest TICK of audio: 16 kHz s16 mono.
+                    start = max(offset, size - int(16000 * TICK) * 2)
+                    start -= (start - WAV_HEADER) % 2
+                    f.seek(start)
+                    data = f.read(size - start)
+                offset = size
+                samples = struct.unpack("<%dh" % (len(data) // 2), data[: len(data) // 2 * 2])
+                bars = bars[1:] + [bar(samples)]
+            elif time.monotonic() - grown > STALL_SECONDS:
+                break
+            ok = send(visible=True, indicatorStyle="pill", phase="recording", style="recording",
+                      waveform=bars, title="Recording")
+        else:
+            ok = send(visible=True, indicatorStyle="pill", phase="processing", style="processing",
+                      waveform=[4] * BARS, title="Transcribing")
+        if not ok:
+            break
+        time.sleep(TICK)
+    send(visible=False)
+    try:
+        pill.stdin.close()
+        pill.wait(timeout=2)
+    except (OSError, subprocess.TimeoutExpired):
+        pill.terminate()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -41,7 +41,9 @@ list of every Claude session on the machine.
 
 ## A session, start to finish
 
-1. Hold Super+D. The bar critter blinks: it is listening.
+1. Hold Super+D. The bar critter blinks: it is listening. With the
+   Superwhisper transcriber, Superwhisper's recording pill also shows over the
+   focused window, its waveform following your voice, then "Transcribing".
 2. Say what you want and release the key. voxtype (or Superwhisper) transcribes it, Claude Code
    starts in the background in your working directory, and a toast says
    "Working on it".
@@ -175,7 +177,8 @@ Super+D up     voxclaude stop      voxtype record stop --wait  →  transcript
                                    claude --bg --settings $RT/hooks.json -- "<text>"
   transcriber = superwhisper:
 Super+D down   voxclaude start     pw-record $RT/prompt.wav
-Super+D up     voxclaude stop      SIGINT pw-record; superwhisper transcribe $RT/prompt.wav
+               └─ bin/voxclaude-pill runs superwhisper-indicator: recording, waveform from prompt.wav
+Super+D up     voxclaude stop      SIGINT pw-record; pill → "Transcribing"; superwhisper transcribe $RT/prompt.wav
                                    superwhisper read (until its session_id)  →  transcript
                                    └─ said a terminal word → foot window: claude attach <shortId>
 Claude hooks   SessionStart       → voxclaude hook start       → record + window for terminal sessions
@@ -201,7 +204,14 @@ watches), `sessions/<shortId>.json` (one record per session), `sessions.json`
 widget), `hooks.json` (the session-scoped Claude hooks), `transcriber` (the
 last setting read, so a press opens the mic before any jq) and voxtype's
 `prompt.txt` - or, while Superwhisper is recording, `prompt.wav` and
-`recorder.pid`. The recording is deleted once it is transcribed.
+`recorder.pid`, and `pill.pid`. The recording is deleted once it is transcribed.
+
+The pill is Superwhisper's own `superwhisper-indicator`, which draws whatever
+JSON lines it is fed on stdin; `bin/voxclaude-pill` runs a private one per
+press, so the Superwhisper daemon is never told about it. It closes when the
+transcript arrives, when the recording stops growing for three seconds, or
+after ten minutes, and without the indicator installed it simply does not
+appear.
 
 Superwhisper's own `start`/`stop` always types the result into the focused
 window, so VoxClaude never uses them: it records the file itself and calls
@@ -328,7 +338,8 @@ bin/voxclaude keybind                      # the hold key the widget will name
 
 `Model.js` is pure ES5 shared by QML and node. `bin/voxclaude` is the only
 thing that runs processes; `tests/voxclaude.test.sh` drives it with stub
-`voxtype`, `superwhisper`, `pw-record`, `claude` and `omarchy-*` binaries on `PATH`. The pixel renderer is
+`voxtype`, `superwhisper`, `pw-record`, `claude` and `omarchy-*` binaries on `PATH`,
+and `VOXCLAUDE_PILL_BIN` at a stub indicator that logs the frames it is sent. The pixel renderer is
 `PixelSprite.qml`, not `Sprite.qml`: QtQuick has a built-in `Sprite` type that
 shadows a same-named file.
 

@@ -23,7 +23,7 @@
 #
 # State lives in $XDG_RUNTIME_DIR/voxclaude (mode 0700): status (one word), recording
 # (marker while the key is held), prompt.txt (voxtype's transcript),
-# prompt.wav and recorder.pid (the Superwhisper capture while it runs),
+# prompt.wav, recorder.pid and pill.pid (the Superwhisper capture while it runs),
 # hooks.json (session-scoped Claude hooks), sessions/<shortId>.json and
 # sessions.json (the aggregated feed the bar widget watches).
 set -uo pipefail
@@ -65,6 +65,7 @@ SESSIONS=$RT/sessions
 PROMPT_FILE=$RT/prompt.txt
 AUDIO_FILE=$RT/prompt.wav
 RECORDER_PID=$RT/recorder.pid
+PILL_PID=$RT/pill.pid
 ENGINE_FILE=$RT/transcriber
 MARKER=$RT/recording
 STATUS_FILE=$RT/status
@@ -452,16 +453,26 @@ TOP_FILTER='map(select((.hidden != true or .status == "needs-input")
   | sort_by([(if .status == "needs-input" then 0 else 1 end), (if .pinned then 0 else 1 end), -(.startedAt // 0)])'
 latest_session() { list_json | jq -r "$TOP_FILTER | .[0].shortId // empty"; }
 
-# The pw-record behind a Superwhisper capture, if it is still running. The pid
-# is checked against /proc so a recycled pid is never mistaken for it, or sent
-# the signal that ends the capture.
-recorder_pid() {
+# A process voxclaude started for a Superwhisper capture, if it is still
+# running. The pid is checked against /proc so a recycled pid is never
+# mistaken for it, or sent the signal meant for it.
+live_pid() { # <pid file> <comm>
   local pid="" comm=""
-  [[ -f $RECORDER_PID ]] && read -r pid < "$RECORDER_PID" 2>/dev/null
+  [[ -f $1 ]] && read -r pid < "$1" 2>/dev/null
   [[ $pid =~ ^[1-9][0-9]*$ ]] || return 1
   { read -r comm < "/proc/$pid/comm"; } 2>/dev/null
-  [[ $comm == pw-record ]] || return 1
+  [[ $comm == "$2" ]] || return 1
   printf '%s\n' "$pid"
+}
+recorder_pid() { live_pid "$RECORDER_PID" pw-record; }
+
+# Superwhisper's recording pill, run by bin/voxclaude-pill: USR1 turns it to
+# "Transcribing", TERM hides it.
+pill_signal() { # <signal>
+  local pid
+  pid=$(live_pid "$PILL_PID" voxclaude-pill) && kill "-$1" "$pid" 2>/dev/null
+  [[ $1 == TERM ]] && rm -f "$PILL_PID"
+  return 0
 }
 
 # A recording marker the recorder no longer honours (the release bind never
@@ -472,6 +483,7 @@ clear_stale_marker() {
   if [[ -f $RECORDER_PID ]]; then
     recorder_pid >/dev/null && return 0
     rm -f "$RECORDER_PID" "$AUDIO_FILE"
+    pill_signal TERM
   else
     # voxtype's state file is only trusted inside the user's own runtime dir.
     local vox_state="${XDG_RUNTIME_DIR:-}/voxtype/state" state=""
@@ -673,7 +685,13 @@ superwhisper_start() {
   printf '%s\n' "$pid" > "$RECORDER_PID"
   # pw-record dies at once when there is no PipeWire or no source to open.
   sleep 0.1
-  recorder_pid >/dev/null && return 0
+  if recorder_pid >/dev/null; then
+    # The pill only after the mic is open; without Superwhisper's indicator
+    # it exits at once and the bar status is all there is.
+    setsid "$plugin_dir/bin/voxclaude-pill" "$AUDIO_FILE" >/dev/null 2>&1 </dev/null &
+    printf '%s\n' "$!" > "$PILL_PID"
+    return 0
+  fi
   rm -f "$RECORDER_PID" "$AUDIO_FILE"
   [[ -s $RT/stderr ]] || echo "pw-record could not open the microphone" > "$RT/stderr"
   return 1
@@ -689,12 +707,13 @@ superwhisper_stop() {
     for ((i = 0; i < 40; i++)); do kill -0 "$pid" 2>/dev/null || break; sleep 0.05; done
   fi
   rm -f "$RECORDER_PID"
-  [[ -s $AUDIO_FILE ]] || { echo "No audio was recorded" >&2; return 1; }
+  pill_signal USR1
+  [[ -s $AUDIO_FILE ]] || { pill_signal TERM; echo "No audio was recorded" >&2; return 1; }
   # Without --insert the transcript is only reported, never typed anywhere.
-  reply=$(superwhisper transcribe "$AUDIO_FILE") || { rm -f "$AUDIO_FILE"; return 1; }
+  reply=$(superwhisper transcribe "$AUDIO_FILE") || { pill_signal TERM; rm -f "$AUDIO_FILE"; return 1; }
   sid=$(jq -r '.session_id // empty' <<< "$reply" 2>/dev/null)
   if [[ ! $sid =~ ^[0-9]+$ ]]; then
-    rm -f "$AUDIO_FILE"; echo "superwhisper: ${reply:-no reply}" >&2; return 1
+    pill_signal TERM; rm -f "$AUDIO_FILE"; echo "superwhisper: ${reply:-no reply}" >&2; return 1
   fi
   # transcribe returns as soon as the job is queued; `read` reports the latest
   # finished one, so wait for it to be ours.
@@ -708,6 +727,7 @@ superwhisper_stop() {
     [[ ${kind:-pending} == pending ]] || break
     sleep 0.1
   done
+  pill_signal TERM
   rm -f "$AUDIO_FILE"
   case ${kind:-pending} in
     text) printf '%s\n' "${text%$'\n'}" ;;
