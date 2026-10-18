@@ -45,7 +45,7 @@ list of every Claude session on the machine.
 1. Hold Super+D. The bar critter blinks: it is listening. With the
    Superwhisper transcriber, Superwhisper's recording pill also shows over the
    focused window, its waveform following your voice, then "Transcribing".
-   With the apple transcriber, apple-dictation shows its own indicator.
+   With the apple transcriber, apple-dictation draws the same pill.
 2. Say what you want and release the key. The transcriber turns it into text, Claude Code
    starts in the background in your working directory, and a toast says
    "Working on it".
@@ -171,7 +171,7 @@ Set on the widget's entry in `shell.json`, or from the bar settings UI:
 | `terminalWords` | `terminal` | Comma-separated words that also open a terminal window on the session |
 | `waitSeconds` | `60` | How long to wait for the transcript |
 | `transcriber` | `voxtype` | `voxtype`, `superwhisper` or `apple`: who turns speech into the prompt |
-| `pillPosition` | `window` | Superwhisper's recording pill: centred on the focused `window`, or at the bottom centre of the `screen` |
+| `pillPosition` | `window` | Superwhisper's recording pill (superwhisper and apple): centred on the focused `window`, or at the bottom centre of the `screen` |
 
 ## How it works
 
@@ -185,7 +185,7 @@ Super+D down   voxclaude start     pw-record $RT/prompt.wav
 Super+D up     voxclaude stop      SIGINT pw-record; pill → "Transcribing"; superwhisper transcribe $RT/prompt.wav
                                    superwhisper read (until its session_id)  →  transcript
   transcriber = apple:
-Super+D down   voxclaude start     apple-dictation start --no-type   (records and shows its own indicator)
+Super+D down   voxclaude start     apple-dictation start --no-type --indicator pill|pill-window   (by pillPosition)
 Super+D up     voxclaude stop      apple-dictation stop --wait <waitSeconds>  →  transcript
                                    └─ said a terminal word → foot window: claude attach <shortId>
 Claude hooks   SessionStart       → voxclaude hook start       → record + window for terminal sessions

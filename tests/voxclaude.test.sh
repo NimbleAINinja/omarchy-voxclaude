@@ -1009,7 +1009,8 @@ cat > "$HOME/.config/omarchy/shell.json" <<JSON
 JSON
 
 ad_reset; "$script" start
-check "apple start asks apple-dictation not to type" called $'^apple-dictation\t.*\tstart --no-type$'
+check "apple start asks apple-dictation not to type" called $'^apple-dictation\t.*\tstart --no-type '
+check "apple start asks for the pill on the focused window by default" called $'^apple-dictation\t.*\tstart --no-type --indicator pill-window$'
 check "apple start never asks voxtype" not_called $'^voxtype\t'
 check "apple start never records with pw-record" not_called $'^pw-record\t'
 check "the marker names apple" test "$(cat "$RT/recording" 2>/dev/null)" = apple
@@ -1037,7 +1038,15 @@ check "a press during a live apple session stops it" called $'^apple-dictation\t
 # No apple-dictation session process behind the marker: the next press starts.
 ad_reset; AD_NO_SESSION=1 "$script" start; : > "$LOG"; "$script" start
 check "a marker with no apple session does not turn a press into a stop" not_called $'^apple-dictation\t.*\tstop'
-check "that press starts a new apple capture" called $'^apple-dictation\t.*\tstart --no-type$'
+check "that press starts a new apple capture" called $'^apple-dictation\t.*\tstart --no-type '
+AD_STOP_EXIT=3 "$script" stop
+
+cat > "$HOME/.config/omarchy/shell.json" <<JSON
+{"bar":{"layout":{"right":[{"id":"io.github.nimbleaininja.voxclaude","transcriber":"apple","pillPosition":"screen"}]}}}
+JSON
+ad_reset; "$script" start
+check "pillPosition screen puts apple's pill at the bottom of the screen" called $'^apple-dictation\t.*\tstart --no-type --indicator pill$'
+AD_STOP_EXIT=3 "$script" stop
 AD_STOP_EXIT=3 "$script" stop
 
 cat > "$HOME/.config/omarchy/shell.json" <<JSON

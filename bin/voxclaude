@@ -88,12 +88,12 @@ load_settings() {
     | ($docs | map(select(type == "object" and has("barWidget"))) | first // {}) as $manifest
     | ([$shell.bar.layout[]?[]? | select(type == "object" and .id == $id)] | first // {}) as $entry
     | ($manifest.barWidget.defaults // {}) as $defaults
-    | ["cwd", "permissionMode", "terminalWords", "waitSeconds", "transcriber"]
+    | ["cwd", "permissionMode", "terminalWords", "waitSeconds", "transcriber", "pillPosition"]
     | map(. as $k | ($entry[$k] // $defaults[$k] // "") | tostring) | join("\u001f")' "${files[@]}" 2>/dev/null)
   # Unit separator, not tab: tab is IFS whitespace, so `read` folds a run of
   # them into one and a single cleared field shifted every later setting along
   # (clearing the trigger words emptied the timeout and broke every dictation).
-  IFS=$'\037' read -r S_CWD S_MODE S_WORDS S_WAIT S_ENGINE <<< "$line"
+  IFS=$'\037' read -r S_CWD S_MODE S_WORDS S_WAIT S_ENGINE S_PILL <<< "$line"
   # A field cleared in the settings UI arrives as "", which is not what the
   # manifest default is for. Empty terminalWords is honoured - wants_terminal
   # then never fires - but the others have no sane empty. The literals
@@ -102,8 +102,9 @@ load_settings() {
   [[ $S_MODE =~ ^(auto|acceptEdits|bypassPermissions|default)$ ]] || S_MODE=auto
   [[ $S_WAIT =~ ^[1-9][0-9]*$ ]] || S_WAIT=60
   [[ $S_ENGINE =~ ^(voxtype|superwhisper|apple)$ ]] || S_ENGINE=voxtype
+  [[ $S_PILL =~ ^(window|screen)$ ]] || S_PILL=window
   # Remembered for the next press, which must open the mic before any jq.
-  printf '%s\n' "$S_ENGINE" > "$ENGINE_FILE" 2>/dev/null
+  printf '%s %s\n' "$S_ENGINE" "$S_PILL" > "$ENGINE_FILE" 2>/dev/null
   S_LOADED=1
 }
 
@@ -111,14 +112,14 @@ load_settings() {
 # load_settings last saw, unless a settings file has changed since then.
 press_engine() {
   local f
-  P_ENGINE=""
-  [[ -f $ENGINE_FILE ]] && read -r P_ENGINE < "$ENGINE_FILE" 2>/dev/null
+  P_ENGINE="" P_PILL=""
+  [[ -f $ENGINE_FILE ]] && read -r P_ENGINE P_PILL < "$ENGINE_FILE" 2>/dev/null
   for f in "$HOME/.config/omarchy/shell.json" "$plugin_dir/manifest.json"; do
     [[ $f -nt $ENGINE_FILE ]] && P_ENGINE=""
   done
   [[ $P_ENGINE =~ ^(voxtype|superwhisper|apple)$ ]] && return 0
   load_settings
-  P_ENGINE=$S_ENGINE
+  P_ENGINE=$S_ENGINE P_PILL=$S_PILL
 }
 
 atomic_write() { # <path> <content>
@@ -753,9 +754,12 @@ cmd_start() {
   if [[ $P_ENGINE == superwhisper ]]; then
     superwhisper_start && ok=1
   elif [[ $P_ENGINE == apple ]]; then
-    # Records the Mac's own mic and shows its own indicator; --no-type keeps
-    # the transcript for `stop --wait` instead of typing it.
-    apple-dictation start --no-type >/dev/null 2>"$RT/stderr" </dev/null && ok=1
+    # Records the Mac's own mic and draws Superwhisper's pill itself, placed
+    # by pillPosition; --no-type keeps the transcript for `stop --wait`
+    # instead of typing it.
+    local indicator=pill
+    [[ $P_PILL == window ]] && indicator=pill-window
+    apple-dictation start --no-type --indicator "$indicator" >/dev/null 2>"$RT/stderr" </dev/null && ok=1
   else
     voxtype record start --file="$PROMPT_FILE" >/dev/null 2>"$RT/stderr" && ok=1
   fi

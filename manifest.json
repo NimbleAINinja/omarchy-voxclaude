@@ -84,7 +84,7 @@
         "label": "Recording pill position",
         "options": ["window", "screen"],
         "defaultValue": "window",
-        "description": "Where Superwhisper's recording pill shows while Super+D records (superwhisper transcriber only): centred on the focused window, as Superwhisper does, or at the bottom centre of the screen."
+        "description": "Where Superwhisper's recording pill shows while Super+D records (superwhisper and apple transcribers): centred on the focused window, as Superwhisper does, or at the bottom centre of the screen."
       }
     ]
   }
