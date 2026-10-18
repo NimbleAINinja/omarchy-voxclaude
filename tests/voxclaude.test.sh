@@ -987,6 +987,59 @@ sw_reset; "$script" start; : > "$LOG"
 SW_PENDING=1000 "$script" stop || true
 check "superwhisper that never reports times out on waitSeconds" called $'omarchy-notification-send\t.*no transcript within 1s'
 
+# ---- transcriber: apple -----------------------------------------------------
+# apple-dictation records the Mac's mic and draws its own indicator; voxclaude
+# only starts it in --no-type mode and collects the text with stop --wait.
+# Its session process is a sleep under the name apple-dictation, since
+# voxclaude checks /proc/<pid>/comm before trusting the pid file.
+mkdir -p "$tmp/ad" && cp "$(command -v sleep)" "$tmp/ad/apple-dictation"
+make_stub apple-dictation '
+pidfile=$XDG_RUNTIME_DIR/apple-dictation.pid
+case "$1" in
+  start) [[ ${AD_START_EXIT:-0} == 0 ]] || { echo "The Mac is not reachable" >&2; exit 1; }
+    [[ -n ${AD_NO_SESSION:-} ]] && exit 0
+    setsid '"$tmp"'/ad/apple-dictation 30 >/dev/null 2>&1 </dev/null & echo $! > "$pidfile" ;;
+  stop) [[ -f $pidfile ]] && kill "$(cat "$pidfile")" 2>/dev/null; rm -f "$pidfile"
+    [[ ${AD_STOP_EXIT:-0} == 1 ]] && { echo "analyzer: exploded" >&2; exit 1; }
+    [[ ${AD_STOP_EXIT:-0} == 0 ]] && printf "%s\n" "${AD_TEXT-}"; exit "${AD_STOP_EXIT:-0}" ;;
+esac'
+ad_reset() { reset; unset AD_START_EXIT AD_STOP_EXIT AD_TEXT AD_NO_SESSION; }
+cat > "$HOME/.config/omarchy/shell.json" <<JSON
+{"bar":{"layout":{"right":[{"id":"io.github.nimbleaininja.voxclaude","transcriber":"apple","waitSeconds":7}]}}}
+JSON
+
+ad_reset; "$script" start
+check "apple start asks apple-dictation not to type" called $'^apple-dictation\t.*\tstart --no-type$'
+check "apple start never asks voxtype" not_called $'^voxtype\t'
+check "apple start never records with pw-record" not_called $'^pw-record\t'
+check "the marker names apple" test "$(cat "$RT/recording" 2>/dev/null)" = apple
+check "apple start sets status listening" test "$(status)" = listening
+AD_TEXT="list the open pull requests" "$script" stop
+check "apple stop waits for the transcript for waitSeconds" called $'^apple-dictation\t.*\tstop --wait 7$'
+check "apple transcript reaches claude" called $'^claude\t.*--bg .*-- list the open pull requests'
+
+ad_reset; "$script" start; AD_STOP_EXIT=3 "$script" stop
+check "apple silence -> nothing heard" called $'omarchy-notification-send\t.*Nothing heard'
+check "apple silence launches nothing" not_called $'^claude\t'
+
+ad_reset; "$script" start; AD_STOP_EXIT=1 "$script" stop || true
+check "apple failure -> error" test "$(status)" = error
+check "apple failure notifies with its stderr" called $'omarchy-notification-send\t.*analyzer: exploded'
+
+ad_reset; AD_START_EXIT=1 "$script" start || true
+check "apple that cannot start notifies" called $'omarchy-notification-send\t.*apple is not recording.*not reachable'
+check "apple that cannot start leaves no marker" test ! -e "$RT/recording"
+
+# A press while the session runs is the release (a missed key-up).
+ad_reset; "$script" start; : > "$LOG"; AD_TEXT="second press" "$script" start
+check "a press during a live apple session stops it" called $'^apple-dictation\t.*\tstop --wait'
+
+# No apple-dictation session process behind the marker: the next press starts.
+ad_reset; AD_NO_SESSION=1 "$script" start; : > "$LOG"; "$script" start
+check "a marker with no apple session does not turn a press into a stop" not_called $'^apple-dictation\t.*\tstop'
+check "that press starts a new apple capture" called $'^apple-dictation\t.*\tstart --no-type$'
+AD_STOP_EXIT=3 "$script" stop
+
 cat > "$HOME/.config/omarchy/shell.json" <<JSON
 {"bar":{"layout":{"right":[{"id":"io.github.nimbleaininja.voxclaude","transcriber":"whisper.cpp"}]}}}
 JSON

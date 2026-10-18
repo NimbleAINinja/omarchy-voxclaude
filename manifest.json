@@ -14,6 +14,7 @@
     "dictation",
     "voxtype",
     "superwhisper",
+    "apple",
     "agent"
   ],
   "kinds": [
@@ -73,9 +74,9 @@
         "key": "transcriber",
         "type": "enum",
         "label": "Transcriber",
-        "options": ["voxtype", "superwhisper"],
+        "options": ["voxtype", "superwhisper", "apple"],
         "defaultValue": "voxtype",
-        "description": "Who turns speech into the prompt. voxtype needs its daemon running; superwhisper records with pw-record and hands the file to the Superwhisper daemon, which never types it anywhere."
+        "description": "Who turns speech into the prompt. voxtype needs its daemon running; superwhisper records with pw-record and hands the file to the Superwhisper daemon, which never types it anywhere; apple uses apple-dictation (Apple's speech recognition on the Mac host) without typing."
       },
       {
         "key": "pillPosition",

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # voxclaude — hold-to-talk Claude Code for the Omarchy shell.
 #
-#   voxclaude start              press: start recording (voxtype, or pw-record for Superwhisper)
+#   voxclaude start              press: start recording (voxtype, pw-record for Superwhisper, or apple-dictation)
 #   voxclaude stop               release: wait for the transcript, then dispatch
 #   voxclaude dispatch <text>    run text through Claude (background or terminal)
 #   voxclaude hook needs-input   Claude Code Notification hook (stdin JSON)
@@ -101,7 +101,7 @@ load_settings() {
   [[ -n $S_CWD ]] || S_CWD=$HOME
   [[ $S_MODE =~ ^(auto|acceptEdits|bypassPermissions|default)$ ]] || S_MODE=auto
   [[ $S_WAIT =~ ^[1-9][0-9]*$ ]] || S_WAIT=60
-  [[ $S_ENGINE =~ ^(voxtype|superwhisper)$ ]] || S_ENGINE=voxtype
+  [[ $S_ENGINE =~ ^(voxtype|superwhisper|apple)$ ]] || S_ENGINE=voxtype
   # Remembered for the next press, which must open the mic before any jq.
   printf '%s\n' "$S_ENGINE" > "$ENGINE_FILE" 2>/dev/null
   S_LOADED=1
@@ -116,7 +116,7 @@ press_engine() {
   for f in "$HOME/.config/omarchy/shell.json" "$plugin_dir/manifest.json"; do
     [[ $f -nt $ENGINE_FILE ]] && P_ENGINE=""
   done
-  [[ $P_ENGINE =~ ^(voxtype|superwhisper)$ ]] && return 0
+  [[ $P_ENGINE =~ ^(voxtype|superwhisper|apple)$ ]] && return 0
   load_settings
   P_ENGINE=$S_ENGINE
 }
@@ -480,7 +480,12 @@ pill_signal() { # <signal>
 # next press into a stop.
 clear_stale_marker() {
   [[ -f $MARKER ]] || return 0
-  if [[ -f $RECORDER_PID ]]; then
+  local engine=""
+  read -r engine < "$MARKER" 2>/dev/null
+  if [[ $engine == apple ]]; then
+    # apple-dictation's session process lives as long as its recording.
+    live_pid "${XDG_RUNTIME_DIR:-/nonexistent}/apple-dictation.pid" apple-dictation >/dev/null && return 0
+  elif [[ -f $RECORDER_PID ]]; then
     recorder_pid >/dev/null && return 0
     rm -f "$RECORDER_PID" "$AUDIO_FILE"
     pill_signal TERM
@@ -747,6 +752,10 @@ cmd_start() {
   local ok=0
   if [[ $P_ENGINE == superwhisper ]]; then
     superwhisper_start && ok=1
+  elif [[ $P_ENGINE == apple ]]; then
+    # Records the Mac's own mic and shows its own indicator; --no-type keeps
+    # the transcript for `stop --wait` instead of typing it.
+    apple-dictation start --no-type >/dev/null 2>"$RT/stderr" </dev/null && ok=1
   else
     voxtype record start --file="$PROMPT_FILE" >/dev/null 2>"$RT/stderr" && ok=1
   fi
@@ -770,9 +779,11 @@ cmd_stop() {
   load_settings
   # A capture under way finishes on the recorder that started it, even if the
   # setting changed while the key was held.
-  [[ $engine =~ ^(voxtype|superwhisper)$ ]] || engine=$S_ENGINE
+  [[ $engine =~ ^(voxtype|superwhisper|apple)$ ]] || engine=$S_ENGINE
   if [[ $engine == superwhisper ]]; then
     text=$(superwhisper_stop 2>"$RT/stderr")
+  elif [[ $engine == apple ]]; then
+    text=$(apple-dictation stop --wait "$S_WAIT" 2>"$RT/stderr")
   else
     text=$(voxtype record stop --wait --timeout "$S_WAIT" 2>"$RT/stderr")
   fi

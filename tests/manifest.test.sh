@@ -18,7 +18,7 @@ jq -e '
   and ([.barWidget.schema[].key] == ["cwd", "permissionMode", "terminalWords", "waitSeconds", "transcriber", "pillPosition"])
   and ((.barWidget.schema[] | select(.key == "pillPosition") | .options) == ["window", "screen"])
   and ((.barWidget.schema[] | select(.key == "permissionMode") | .options) == ["auto", "acceptEdits", "bypassPermissions", "default"])
-  and ((.barWidget.schema[] | select(.key == "transcriber") | .options) == ["voxtype", "superwhisper"])
+  and ((.barWidget.schema[] | select(.key == "transcriber") | .options) == ["voxtype", "superwhisper", "apple"])
 ' "$dir/manifest.json" >/dev/null
 
 [[ -f "$dir/Panel.qml" ]] || { echo "Panel.qml missing" >&2; exit 1; }
